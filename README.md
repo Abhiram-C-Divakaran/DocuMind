@@ -2,7 +2,7 @@
 
 DocuMind is a production-oriented multimodal document intelligence platform designed to ingest scanned receipts and invoices, validate binary file integrity, perform high-resolution OCR, extract structured tabular and entity data, and maintain an immutable processing ledger.
 
-**Current Release**: **Phase 2A (Functioning Tesseract OCR & Rule-Based Extraction)**
+**Current Release**: **Phase 2C (Tesseract OCR + Verified SROIE LayoutLMv3 Training & Scientific Benchmarking)**
 
 ---
 
@@ -58,17 +58,21 @@ Doc/
 │   ├── vite.config.ts
 │   └── tailwind.config.js
 ├── ml/                       # Extensible ML extraction subsystem
+│   ├── data/                 # Verified SROIE loader, alignment, splitting & validation
+│   ├── training/             # Shared LayoutLMv3 preprocessing, GPU training & Colab notebook
+│   ├── evaluation/           # Held-out evaluation & scientific model comparison
+│   ├── inference/            # BIO tag decoder & confidence aggregation
 │   ├── ocr/                  # Real OCR engine, PDF converter, pre-processing
 │   ├── extraction/           # Rule-based field extraction & validation pipelines
 │   ├── extractors/
 │   │   ├── tesseract_baseline.py # Functioning Tesseract OCR baseline extractor
-│   │   ├── layoutlmv3_extractor.py # Multimodal transformer interface for Phase 2B
+│   │   ├── layoutlmv3_extractor.py # Validated LayoutLMv3 multimodal extractor
 │   │   └── placeholder.py    # Phase 1 transparent stub
 │   ├── base.py               # BaseExtractor abstract contract & ExtractionOutput
 │   └── README.md             # Detailed ML subsystem documentation
 ├── storage/
 │   └── uploads/              # Local storage isolated from web root (safe UUIDs)
-├── tests/                    # Pytest suite (32 unit & integration tests)
+├── tests/                    # Pytest suite (54 unit & integration tests)
 ├── docker-compose.yml        # PostgreSQL 16 container definition
 ├── .env.example              # Documented configuration template
 └── README.md

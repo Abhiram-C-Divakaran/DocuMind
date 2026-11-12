@@ -31,12 +31,13 @@ def get_extractor(method_name: str):
 
     if method == ExtractionMethod.LAYOUTLMV3.value:
         extractor = LayoutLMv3Extractor()
-        if not extractor.is_checkpoint_available():
+        ok, reason = extractor.validate_checkpoint()
+        if not ok:
             raise FileValidationError(
                 f"LayoutLMv3 multimodal extraction is unavailable in Phase 2A / without fine-tuned weights. "
-                f"Model checkpoint is not available at '{extractor.checkpoint_dir}'. "
-                "Please run the Phase 2B fine-tuning pipeline ('python -m ml.training.train_layoutlmv3') "
-                "to produce trained model weights before selecting this extractor."
+                f"Model checkpoint is not available at '{extractor.checkpoint_dir}': {reason}. "
+                "Please run the training pipeline ('python -m ml.training.train_layoutlmv3') "
+                "to produce valid trained weights before selecting this extractor."
             )
         return extractor
 
@@ -77,9 +78,14 @@ class DocumentService:
         )
 
         # 4. Create document record with PROCESSING or PENDING
+        real_extractors = {
+            ExtractionMethod.TESSERACT_BASELINE.value,
+            ExtractionMethod.LAYOUTLMV3.value,
+        }
+        is_real_extractor = extractor.method_name in real_extractors
         initial_status = (
             DocumentStatus.PROCESSING.value
-            if extractor.method_name == ExtractionMethod.TESSERACT_BASELINE.value
+            if is_real_extractor
             else DocumentStatus.PENDING.value
         )
 
@@ -99,7 +105,12 @@ class DocumentService:
         status_message: str
 
         # 5. Run extraction
-        if extractor.method_name == ExtractionMethod.TESSERACT_BASELINE.value:
+        if is_real_extractor:
+            method_label = (
+                "LayoutLMv3 multimodal extraction"
+                if extractor.method_name == ExtractionMethod.LAYOUTLMV3.value
+                else "Tesseract OCR"
+            )
             try:
                 extraction_output = await extractor.extract(Path(file_path))
 
@@ -122,13 +133,15 @@ class DocumentService:
                 await db.refresh(document)
 
                 status_message = (
-                    f"Document '{document.original_filename}' processed successfully via Tesseract OCR."
+                    f"Document '{document.original_filename}' processed successfully via {method_label}."
                 )
-                logger.info(f"Document {document.id} successfully processed via Tesseract OCR.")
+                logger.info(f"Document {document.id} successfully processed via {method_label}.")
 
             except Exception as e:
                 sanitized_error = str(e)
-                logger.error(f"Error executing OCR extraction on document {document.id}: {sanitized_error}")
+                logger.error(
+                    f"Error executing {method_label} on document {document.id}: {sanitized_error}"
+                )
 
                 document.status = DocumentStatus.FAILED.value
                 document.error_message = sanitized_error
@@ -150,7 +163,7 @@ class DocumentService:
                 await db.refresh(document)
 
                 status_message = (
-                    f"Document '{document.original_filename}' uploaded but OCR processing failed: {sanitized_error}"
+                    f"Document '{document.original_filename}' uploaded but {method_label} failed: {sanitized_error}"
                 )
 
         else:

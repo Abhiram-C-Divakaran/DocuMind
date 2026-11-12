@@ -1,42 +1,41 @@
-# DocuMind ML Subsystem (Phase 2B — SROIE & LayoutLMv3 Multimodal Intelligence)
+# DocuMind ML Subsystem (Phase 2C — SROIE & LayoutLMv3 Multimodal Intelligence)
 
-This package contains the complete machine learning subsystem for DocuMind:
-1. **Phase 2A**: Production OCR and rule-based receipt extraction pipeline (`TesseractBaselineExtractor`).
-2. **Phase 2B**: Multimodal document deep learning pipeline fine-tuning `microsoft/layoutlmv3-base` on the SROIE benchmark with token/entity-level evaluation and comparative benchmarking (`LayoutLMv3Extractor`).
+This package contains the machine learning subsystem for DocuMind:
+1. **Phase 2A**: Tesseract OCR and rule-based receipt extraction pipeline (`TesseractBaselineExtractor`).
+2. **Phase 2B/2C**: Reproducible deep learning data ingestion, unified multimodal preprocessing, LayoutLMv3 fine-tuning on real SROIE receipt images, held-out evaluation, comparative benchmarking, and validated FastAPI inference (`LayoutLMv3Extractor`).
 
 ---
 
 ## 1. Directory Structure
 
-```
+```text
 ml/
 ├── data/
-│   ├── annotation_alignment.py  # SROIE ground truth to OCR span alignment & BIO tagging
-│   ├── sroie_loader.py          # SROIE dataset loader (local, Hugging Face, or synthetic)
-│   ├── prepare_dataset.py       # Reproducible train/val/test splitting & data leakage checks
-│   └── dataset_validation.py    # Manifest statistical validation (JSON & Markdown reports)
+│   ├── annotation_alignment.py  # SROIE word-splitting, span alignment & BIO tagging
+│   ├── sroie_loader.py          # Verified SROIE loader (HF / local split dirs) & PNG smoke generator
+│   ├── prepare_dataset.py       # Reproducible splitting, SHA-256 deduplication & leakage checks
+│   └── dataset_validation.py    # Audit statistics, image integrity & alignment reports
 ├── training/
-│   ├── config.py                # LayoutLMv3 training hyperparameters dataclass
-│   ├── dataset.py               # PyTorch Dataset, token/bbox alignment, subword -100 masking
-│   ├── train_layoutlmv3.py      # End-to-end fine-tuning script with smoke-test mode
-│   └── colab_guide.py           # Google Colab GPU training instructions & notebook runner
+│   ├── config.py                # Hyperparameters dataclass & CUDA/MPS/CPU device detection
+│   ├── dataset.py               # Shared prepare_layoutlmv3_inputs() preprocessing & PyTorch Dataset
+│   ├── train_layoutlmv3.py      # Reproducible fine-tuning (AMP fp16, early stopping, resume, metadata)
+│   └── DocuMind_LayoutLMv3_Training.ipynb  # Ready-to-run Google Colab T4 GPU notebook
 ├── evaluation/
-│   ├── metrics.py               # Seqeval strict IOB2 entity F1, exact match, & model footprint
-│   ├── evaluate.py              # Single checkpoint test evaluation CLI
-│   ├── compare_models.py        # Side-by-side benchmark comparing LayoutLMv3 vs. Baseline
-│   └── results/                 # Evaluation JSON artifacts and Markdown comparison tables
+│   ├── metrics.py               # Seqeval strict IOB2 entity F1, document exact match & footprint
+│   ├── evaluate.py              # Held-out split checkpoint evaluation (evaluation_report.json/.md)
+│   └── compare_models.py        # Honest side-by-side comparison vs. Tesseract+Rules baseline
 ├── inference/
-│   └── decoder.py               # Token logit BIO decoding to canonical entity fields
+│   └── decoder.py               # Token logit BIO decoding & entity confidence scoring
 ├── extractors/
-│   ├── layoutlmv3_extractor.py  # Production LayoutLMv3Extractor integrating with FastAPI
-│   ├── tesseract_baseline.py    # Active Phase 2A OCR + Rules baseline extractor
+│   ├── layoutlmv3_extractor.py  # Strict checkpoint validation & multimodal runtime extractor
+│   ├── tesseract_baseline.py    # Phase 2A OCR + Rules baseline extractor
 │   └── placeholder.py           # Phase 1 transparent placeholder stub
 ├── ocr/
 │   ├── engine.py                # Tesseract OCR runner, tokenization, 0-1000 bbox normalization
-│   ├── pdf_converter.py         # High-DPI PDF page rasterizer via PyMuPDF
-│   └── preprocessor.py          # Orientation deskew, CLAHE contrast boost, adaptive thresholding
+│   ├── pdf_converter.py         # PDF page rasterizer via PyMuPDF
+│   └── preprocessor.py          # Deskew, CLAHE contrast boost, adaptive thresholding
 └── extraction/
-    ├── pipeline.py              # Phase 2A rule-based receipt extraction orchestrator
+    ├── pipeline.py              # Rule-based receipt extraction orchestrator
     ├── vendor.py                # Vendor name extraction heuristics
     ├── address.py               # Spatial address heuristics
     ├── date.py                  # Multi-format date regex parser
@@ -61,121 +60,94 @@ The SROIE token classification task maps document tokens into 9 canonical classe
 | `7` | `B-TOTAL` | Beginning of Final Total Amount |
 | `8` | `I-TOTAL` | Inside continuation of Final Total Amount |
 
-### Subword Masking & Alignment
-LayoutLMv3 uses a Byte-Pair Encoding (BPE) subword tokenizer.
-- The **first subword** of each OCR word receives the assigned entity label (`B-*` or `I-*`).
-- All **subsequent subwords** of that word, as well as special tokens (`<s>`, `</s>`, `<pad>`), are masked with `-100` so that PyTorch `CrossEntropyLoss` ignores them during backpropagation and `seqeval` does not penalize subword divisions.
+### Unified Preprocessing (`prepare_layoutlmv3_inputs`)
+Training, held-out evaluation, benchmark comparison, and FastAPI inference all share `prepare_layoutlmv3_inputs()` in `ml/training/dataset.py`:
+- Real document images are resized to `224x224` RGB and normalized (`mean=0.5`, `std=0.5`). Zero-filled or blank substitute canvases are never used when an image fails to load.
+- Special tokens receive `[0, 0, 0, 0]` bounding boxes and `-100` labels; subword continuations share the parent word's `0–1000` bounding box and receive `-100` labels.
 
 ---
 
 ## 3. Dataset Ingestion & Preparation
 
-To download or ingest SROIE, run annotation alignment, verify zero cross-split data leakage, and persist processed manifests to `data/sroie_processed/`:
+By default, `prepare_dataset.py` ingests verified SROIE receipts with genuine images from Hugging Face (`arvindrajan92/sroie_document_understanding`) or a local SROIE directory (`--local-dir`). Missing or corrupted images are explicitly excluded and audited rather than replaced with blank images.
 
 ```bash
-# Ingest SROIE with reproducible train (70%) / val (15%) / test (15%) splits:
-python -m ml.data.prepare_dataset --output-dir data/sroie_processed --seed 42
+# 1. Prepare real SROIE dataset from Hugging Face Hub:
+python -m ml.data.prepare_dataset \
+    --hf-dataset arvindrajan92/sroie_document_understanding \
+    --output-dir data/sroie_processed \
+    --seed 42
+
+# 2. Or prepare from a local SROIE benchmark folder (flat or train/+test/ layout):
+python -m ml.data.prepare_dataset \
+    --local-dir /path/to/SROIE2019 \
+    --output-dir data/sroie_processed \
+    --seed 42
 ```
 
 Outputs generated in `data/sroie_processed/`:
-- `train.jsonl`
-- `val.jsonl`
-- `test.jsonl`
-- `validation_report.json`
-- `validation_report.md`
+- `train.jsonl`, `validation.jsonl`, `test.jsonl`
+- `dataset_manifest.json` (source, SHA-256 split hashes, leakage audit, excluded counts)
+- `validation_report.json` and `validation_report.md`
+
+Full dataset preparation and full training refuse to silently fall back to synthetic data. Synthetic generation (`--allow-synthetic`) is strictly reserved for unit tests and explicit `--smoke-test` execution.
 
 ---
 
-## 4. LayoutLMv3 Fine-Tuning Pipeline
+## 4. Training Pipeline (Colab GPU or Local Linux/macOS)
 
-### Fast Local CPU Smoke Test
-To verify the entire training loop, gradient accumulation, validation step, and checkpoint serialization without downloading massive datasets:
+Open `ml/training/DocuMind_LayoutLMv3_Training.ipynb` in Google Colab (T4 GPU runtime) or run directly from CLI:
+
+```bash
+# Full GPU fine-tuning on prepared real SROIE data:
+python -m ml.training.train_layoutlmv3 \
+    --data-dir data/sroie_processed \
+    --output-dir checkpoints/layoutlmv3-sroie \
+    --best-model-dir checkpoints/layoutlmv3-sroie-best \
+    --model-name microsoft/layoutlmv3-base \
+    --epochs 8 \
+    --batch-size 4 \
+    --grad-accum 2 \
+    --lr 2e-5 \
+    --patience 3 \
+    --seed 42
+```
+
+Features:
+- Fixed random seeding across Python, NumPy, and PyTorch (`--seed`)
+- CUDA AMP (`fp16`) enabled automatically on CUDA devices (disable with `--no-fp16`)
+- Gradient accumulation, linear warmup decay, gradient clipping, and early stopping
+- Best checkpoint selection on validation strict BIO F1, saving `checkpoint_metadata.json`, tokenizer/processor configs, and `training_state.pt` (`--resume-from-checkpoint`)
+
+For quick pipeline verification with synthetic rendered PNGs:
 
 ```bash
 python -m ml.training.train_layoutlmv3 --smoke-test --epochs 1 --batch-size 2
 ```
 
-### Full GPU Training (Local or Cloud Server)
-```bash
-python -m ml.training.train_layoutlmv3 \
-    --data-dir data/sroie_processed \
-    --output-dir checkpoints/layoutlmv3-sroie \
-    --best-model-dir checkpoints/layoutlmv3-sroie-best \
-    --epochs 3 \
-    --batch-size 4 \
-    --lr 2e-5 \
-    --seed 42
-```
-
 ---
 
-## 5. Google Colab Free GPU Guide
-
-For training with a free Google Colab T4 GPU:
-1. Open a new notebook in [Google Colab](https://colab.research.google.com).
-2. Set runtime type to GPU: `Runtime` > `Change runtime type` > `T4 GPU`.
-3. Follow the instructions in `ml/training/colab_guide.py`:
-
-```python
-# Cell 1: Install dependencies
-!pip install -q torch transformers datasets seqeval pillow pytesseract accelerate
-
-# Cell 2: Clone repository
-!git clone https://github.com/Abhiram-C-Divakaran/DocuMind.git
-%cd DocuMind
-
-# Cell 3: Prepare dataset
-!python -m ml.data.prepare_dataset --output-dir data/sroie_processed --use-huggingface --seed 42
-
-# Cell 4: Train model
-!python -m ml.training.train_layoutlmv3 \
-    --data-dir data/sroie_processed \
-    --output-dir checkpoints/layoutlmv3-sroie \
-    --best-model-dir checkpoints/layoutlmv3-sroie-best \
-    --epochs 3 \
-    --batch-size 4 \
-    --lr 2e-5
-
-# Cell 5: Run Comparative Benchmark
-!python -m ml.evaluation.compare_models \
-    --checkpoint-dir checkpoints/layoutlmv3-sroie-best \
-    --test-jsonl data/sroie_processed/test.jsonl
-
-# Cell 6: Download trained weights to local machine
-from google.colab import files
-!zip -r layoutlmv3_sroie_best.zip checkpoints/layoutlmv3-sroie-best/
-files.download('layoutlmv3_sroie_best.zip')
-```
-
-Extract the downloaded zip into `checkpoints/layoutlmv3-sroie-best/` in your local project workspace.
-
----
-
-## 6. Evaluation & Comparative Benchmark
-
-To run evaluation on the held-out test split:
+## 5. Held-Out Evaluation & Scientific Benchmarking
 
 ```bash
+# Held-out test evaluation (writes evaluation_report.json and evaluation_report.md):
 python -m ml.evaluation.evaluate \
     --checkpoint-dir checkpoints/layoutlmv3-sroie-best \
-    --test-jsonl data/sroie_processed/test.jsonl \
+    --data-dir data/sroie_processed \
+    --split test \
     --output-dir ml/evaluation/results
-```
 
-To run a side-by-side benchmark comparison between the Phase 2A Tesseract baseline and fine-tuned LayoutLMv3:
-
-```bash
+# Side-by-side comparison vs. Phase 2A Tesseract+Rules baseline:
+# Add --run-full-ocr when tesseract-ocr is installed to measure true end-to-end OCR+extraction latency.
 python -m ml.evaluation.compare_models \
     --checkpoint-dir checkpoints/layoutlmv3-sroie-best \
-    --test-jsonl data/sroie_processed/test.jsonl \
-    --output-dir ml/evaluation/results
+    --data-dir data/sroie_processed \
+    --split test \
+    --output-dir ml/evaluation/results \
+    --run-full-ocr
 ```
 
-Outputs:
-- `ml/evaluation/results/benchmark_comparison.json`
-- `ml/evaluation/results/benchmark_comparison.md`
-
-### Benchmark Insights & Error Analysis
-1. **Address & Postal Code Disambiguation**: In rule-based extraction, 5-digit postal codes (e.g., `55100 KUALA LUMPUR`) frequently trigger false positives for `total_amount`. Multimodal LayoutLMv3 uses 2D spatial coordinates and header/footer proximity to distinguish addresses from totals.
-2. **Multi-line Addresses**: LayoutLMv3 connects sequential tokens using `B-ADDRESS` and `I-ADDRESS` spanning multiple receipt lines, eliminating fragmented address extractions.
-3. **Inference Latency Trade-off**: The pure CPU rule-based pipeline extracts fields in **~2ms**; LayoutLMv3 requires transformer forward passes taking **~80-120ms** on GPU (~400ms on CPU).
+### Reporting Integrity Rules
+- If the LayoutLMv3 checkpoint is missing, invalid, or cannot be loaded, `evaluate.py` and `compare_models.py` mark LayoutLMv3 as `NOT_EVALUATED` with `null` metrics rather than reporting fabricated `0.0` F1 or `0.0 ms` latency.
+- Full-pipeline latency (`ocr_latency_ms` + `feature_prep_latency_ms` + `model_inference_latency_ms`) is reported separately from model-only or rule-parse-only latency.
+- Synthetic smoke datasets are explicitly rejected by `evaluate.py` and `compare_models.py` unless `--allow-synthetic` is passed, in which case all reports are labeled `SYNTHETIC SMOKE TEST`.

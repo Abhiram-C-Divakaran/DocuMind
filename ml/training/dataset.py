@@ -1,18 +1,185 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
+from PIL import Image
+
 try:
     import torch
     from torch.utils.data import Dataset
+
     HAS_TORCH = True
 except (ImportError, OSError):
     torch = None  # type: ignore
+
     class Dataset:  # type: ignore
         pass
+
     HAS_TORCH = False
-from PIL import Image
 
 from ml.data.annotation_alignment import AlignedReceipt, LABEL2ID
+
+
+def load_rgb_image(image_source: Union[str, Path, Image.Image]) -> Image.Image:
+    """
+    Loads and validates an image as RGB PIL Image.
+    Fails loudly if the path is missing or corrupted rather than substituting a blank canvas.
+    """
+    if isinstance(image_source, Image.Image):
+        rgb = image_source.convert("RGB")
+        if rgb.size[0] <= 0 or rgb.size[1] <= 0:
+            raise ValueError("Provided PIL image has empty dimensions.")
+        return rgb
+
+    if not image_source:
+        raise FileNotFoundError("Image path is empty or None.")
+
+    path = Path(image_source)
+    if not path.exists() or not path.is_file() or path.stat().st_size == 0:
+        raise FileNotFoundError(f"Receipt image file missing or empty: {path}")
+
+    with Image.open(path) as img:
+        rgb = img.convert("RGB")
+        rgb.load()
+    if rgb.size[0] <= 0 or rgb.size[1] <= 0:
+        raise ValueError(f"Decoded image has invalid dimensions: {path}")
+    return rgb
+
+
+def preprocess_image_array(
+    image: Union[str, Path, Image.Image],
+    image_processor: Optional[Any] = None,
+    image_size: int = 224,
+) -> np.ndarray:
+    """
+    Preprocesses an image into CHW float32 normalized pixels matching LayoutLMv3ImageProcessor
+    (RGB resize 224x224, rescale 1/255, mean=0.5, std=0.5 -> range [-1.0, 1.0]).
+    """
+    rgb = load_rgb_image(image)
+
+    if image_processor is not None:
+        try:
+            processed = image_processor(images=rgb, return_tensors="np")
+            pixel_values = processed["pixel_values"][0]
+            return np.asarray(pixel_values, dtype=np.float32)
+        except Exception:
+            if HAS_TORCH and torch is not None:
+                processed = image_processor(images=rgb, return_tensors="pt")
+                return processed["pixel_values"].squeeze(0).detach().cpu().numpy().astype(np.float32)
+
+    resized = rgb.resize((image_size, image_size), resample=Image.BILINEAR)
+    arr = np.asarray(resized, dtype=np.float32) / 255.0
+    arr = (arr - 0.5) / 0.5
+    arr = np.transpose(arr, (2, 0, 1))
+    return arr.astype(np.float32)
+
+
+def preprocess_image_tensor(
+    image: Union[str, Path, Image.Image],
+    image_processor: Optional[Any] = None,
+    image_size: int = 224,
+) -> Any:
+    """Returns preprocessed (3, H, W) torch.FloatTensor (or NumPy float32 array if torch is unavailable)."""
+    arr = preprocess_image_array(image, image_processor=image_processor, image_size=image_size)
+    if HAS_TORCH and torch is not None:
+        return torch.from_numpy(arr)
+    return arr
+
+
+def align_tokens_and_boxes_arrays(
+    tokenizer: Any,
+    words: List[str],
+    boxes: List[List[int]],
+    word_labels: Optional[List[str]] = None,
+    max_seq_length: int = 512,
+    return_word_ids: bool = False,
+) -> Dict[str, Any]:
+    """
+    Shared tokenization + subword bounding-box and BIO label alignment returning NumPy arrays.
+    - Special tokens (word_id is None): bbox [0, 0, 0, 0], label -100.
+    - First subword of word_i: bbox clamped[word_i], label LABEL2ID[word_labels[word_i]] (if provided).
+    - Subsequent subwords of word_i: bbox clamped[word_i], label -100.
+    """
+    if not words:
+        words = [""]
+        boxes = [[0, 0, 0, 0]]
+        if word_labels is not None:
+            word_labels = ["O"]
+
+    clamped_boxes: List[List[int]] = []
+    for b in boxes:
+        x0 = max(0, min(1000, int(b[0])))
+        y0 = max(0, min(1000, int(b[1])))
+        x1 = max(x0, min(1000, int(b[2])))
+        y1 = max(y0, min(1000, int(b[3])))
+        clamped_boxes.append([x0, y0, x1, y1])
+
+    try:
+        encoding = tokenizer(
+            words,
+            is_split_into_words=True,
+            truncation=True,
+            padding="max_length",
+            max_length=max_seq_length,
+            return_attention_mask=True,
+        )
+    except TypeError:
+        encoding = tokenizer(
+            words,
+            is_split_into_words=True,
+            truncation=True,
+            padding="max_length",
+            max_length=max_seq_length,
+        )
+
+    try:
+        word_ids = encoding.word_ids(batch_index=0)
+    except TypeError:
+        word_ids = encoding.word_ids()
+    aligned_boxes: List[List[int]] = []
+    aligned_labels: List[int] = []
+
+    previous_word_idx: Optional[int] = None
+    for word_idx in word_ids:
+        if word_idx is None:
+            aligned_boxes.append([0, 0, 0, 0])
+            if word_labels is not None:
+                aligned_labels.append(-100)
+        elif word_idx != previous_word_idx:
+            aligned_boxes.append(clamped_boxes[word_idx])
+            if word_labels is not None:
+                lbl_str = word_labels[word_idx] if word_idx < len(word_labels) else "O"
+                aligned_labels.append(LABEL2ID.get(lbl_str, 0))
+        else:
+            aligned_boxes.append(clamped_boxes[word_idx])
+            if word_labels is not None:
+                aligned_labels.append(-100)
+        previous_word_idx = word_idx
+
+    raw_ids = encoding["input_ids"]
+    raw_mask = encoding["attention_mask"]
+    if hasattr(raw_ids, "detach"):
+        raw_ids = raw_ids.detach().cpu().numpy()
+    if hasattr(raw_mask, "detach"):
+        raw_mask = raw_mask.detach().cpu().numpy()
+
+    input_ids_arr = np.asarray(raw_ids, dtype=np.int64)
+    if input_ids_arr.ndim > 1:
+        input_ids_arr = input_ids_arr[0]
+    attn_arr = np.asarray(raw_mask, dtype=np.int64)
+    if attn_arr.ndim > 1:
+        attn_arr = attn_arr[0]
+
+    result: Dict[str, Any] = {
+        "input_ids": input_ids_arr,
+        "attention_mask": attn_arr,
+        "bbox": np.asarray(aligned_boxes, dtype=np.int64),
+    }
+    if word_labels is not None:
+        result["labels"] = np.asarray(aligned_labels, dtype=np.int64)
+    if return_word_ids:
+        result["word_ids"] = word_ids
+    return result
 
 
 def align_tokens_and_boxes(
@@ -21,166 +188,128 @@ def align_tokens_and_boxes(
     boxes: List[List[int]],
     word_labels: List[str],
     max_seq_length: int = 512,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Tokenizes words using LayoutLMv3 tokenizer, maps subword tokens to parent boxes,
-    and assigns token-level BIO labels (first subword gets label, subsequent subwords get -100).
-
-    Returns:
-        input_ids: (max_seq_length,)
-        attention_mask: (max_seq_length,)
-        bbox: (max_seq_length, 4)
-        labels: (max_seq_length,)
-    """
-    if not words:
-        words = [""]
-        boxes = [[0, 0, 0, 0]]
-        word_labels = ["O"]
-
-    # Clamp boxes to 0-1000
-    clamped_boxes = []
-    for b in boxes:
-        clamped_boxes.append(
-            [
-                max(0, min(1000, int(b[0]))),
-                max(0, min(1000, int(b[1]))),
-                max(0, min(1000, int(b[2]))),
-                max(0, min(1000, int(b[3]))),
-            ]
-        )
-
-    encoding = tokenizer(
-        words,
-        is_split_into_words=True,
-        truncation=True,
-        max_length=max_seq_length,
-        padding="max_length",
-        return_offsets_mapping=False,
+) -> Tuple[Any, Any, Any, Any]:
+    """Tensor wrapper (with NumPy fallback when PyTorch is unavailable) preserving the 4-tuple signature."""
+    arrays = align_tokens_and_boxes_arrays(
+        tokenizer=tokenizer,
+        words=words,
+        boxes=boxes,
+        word_labels=word_labels,
+        max_seq_length=max_seq_length,
+        return_word_ids=False,
     )
-
-    input_ids = encoding["input_ids"]
-    attention_mask = encoding["attention_mask"]
-
-    # Retrieve word index for each token
-    word_ids = encoding.word_ids()
-
-    token_boxes: List[List[int]] = []
-    token_labels: List[int] = []
-    prev_word_idx = None
-
-    for i, word_idx in enumerate(word_ids):
-        if word_idx is None:
-            # Special token (<s>, </s>, <pad>)
-            token_boxes.append([0, 0, 0, 0])
-            token_labels.append(-100)
-        else:
-            token_boxes.append(clamped_boxes[word_idx])
-            if word_idx != prev_word_idx:
-                # First subword: assign word BIO label
-                lbl_str = word_labels[word_idx] if word_idx < len(word_labels) else "O"
-                token_labels.append(LABEL2ID.get(lbl_str, 0))
-            else:
-                # Subsequent subword: mask loss with -100
-                token_labels.append(-100)
-        prev_word_idx = word_idx
-
     if HAS_TORCH and torch is not None:
         return (
-            torch.tensor(input_ids, dtype=torch.long),
-            torch.tensor(attention_mask, dtype=torch.long),
-            torch.tensor(token_boxes, dtype=torch.long),
-            torch.tensor(token_labels, dtype=torch.long),
+            torch.from_numpy(arrays["input_ids"]),
+            torch.from_numpy(arrays["attention_mask"]),
+            torch.from_numpy(arrays["bbox"]),
+            torch.from_numpy(arrays["labels"]),
         )
     return (
-        np.array(input_ids, dtype=np.int64),
-        np.array(attention_mask, dtype=np.int64),
-        np.array(token_boxes, dtype=np.int64),
-        np.array(token_labels, dtype=np.int64),
+        arrays["input_ids"],
+        arrays["attention_mask"],
+        arrays["bbox"],
+        arrays["labels"],
     )
 
 
-def preprocess_image_tensor(image: Image.Image) -> Any:
+def prepare_layoutlmv3_inputs(
+    image: Union[str, Path, Image.Image],
+    words: List[str],
+    boxes: List[List[int]],
+    tokenizer: Any,
+    image_processor: Optional[Any] = None,
+    word_labels: Optional[List[str]] = None,
+    max_seq_length: int = 512,
+    image_size: int = 224,
+    return_word_ids: bool = False,
+    as_numpy: bool = False,
+) -> Dict[str, Any]:
     """
-    Prepares a document image for LayoutLMv3:
-    Resizes to 224x224 and normalizes RGB channels to [-1.0, 1.0].
-    Returns shape: (3, 224, 224)
+    Canonical feature preparation pipeline shared identically across
+    LayoutLMv3 training, validation, scientific benchmarking, and FastAPI inference.
     """
-    img_resized = image.convert("RGB").resize((224, 224), Image.BILINEAR)
-    arr = np.array(img_resized, dtype=np.float32) / 255.0  # [0, 1]
-    # Normalize with mean=0.5, std=0.5 -> [-1, 1]
-    arr = (arr - 0.5) / 0.5
-    # Channels first: (3, 224, 224)
-    transposed = arr.transpose(2, 0, 1)
-    if HAS_TORCH and torch is not None:
-        return torch.tensor(transposed, dtype=torch.float32)
-    return transposed
+    pixel_arr = preprocess_image_array(
+        image=image, image_processor=image_processor, image_size=image_size
+    )
+    token_arrays = align_tokens_and_boxes_arrays(
+        tokenizer=tokenizer,
+        words=words,
+        boxes=boxes,
+        word_labels=word_labels,
+        max_seq_length=max_seq_length,
+        return_word_ids=return_word_ids,
+    )
+
+    if as_numpy or not HAS_TORCH or torch is None:
+        out: Dict[str, Any] = {
+            "input_ids": token_arrays["input_ids"],
+            "attention_mask": token_arrays["attention_mask"],
+            "bbox": token_arrays["bbox"],
+            "pixel_values": pixel_arr,
+        }
+        if "labels" in token_arrays:
+            out["labels"] = token_arrays["labels"]
+        if return_word_ids:
+            out["word_ids"] = token_arrays["word_ids"]
+        return out
+
+    out = {
+        "input_ids": torch.from_numpy(token_arrays["input_ids"]),
+        "attention_mask": torch.from_numpy(token_arrays["attention_mask"]),
+        "bbox": torch.from_numpy(token_arrays["bbox"]),
+        "pixel_values": torch.from_numpy(pixel_arr),
+    }
+    if "labels" in token_arrays:
+        out["labels"] = torch.from_numpy(token_arrays["labels"])
+    if return_word_ids:
+        out["word_ids"] = token_arrays["word_ids"]
+    return out
 
 
 class SROIELayoutLMv3Dataset(Dataset):
-    """
-    PyTorch Dataset for fine-tuning LayoutLMv3 on SROIE.
-    Converts AlignedReceipt records into multi-modal tensor features.
-    """
+    """PyTorch Dataset wrapping SROIE AlignedReceipt records for LayoutLMv3."""
 
     def __init__(
         self,
         receipts: List[AlignedReceipt],
         tokenizer: Any,
         max_seq_length: int = 512,
+        image_processor: Optional[Any] = None,
+        image_size: int = 224,
     ):
         self.receipts = receipts
         self.tokenizer = tokenizer
         self.max_seq_length = max_seq_length
+        self.image_processor = image_processor
+        self.image_size = image_size
 
     def __len__(self) -> int:
         return len(self.receipts)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        item = self.receipts[idx]
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        receipt = self.receipts[idx]
+        if not receipt.image_path:
+            raise FileNotFoundError(
+                f"Receipt '{receipt.receipt_id}' has no image_path; cannot prepare LayoutLMv3 sample."
+            )
 
-        # 1. Load or synthesize image
-        if item.image_path and Path(item.image_path).exists():
-            try:
-                img = Image.open(item.image_path).convert("RGB")
-            except Exception:
-                img = Image.new("RGB", (1000, 1000), color=(255, 255, 255))
-        else:
-            img = Image.new("RGB", (1000, 1000), color=(255, 255, 255))
-
-        pixel_values = preprocess_image_tensor(img)
-
-        # 2. Tokenize and align
-        input_ids, attention_mask, bbox, labels = align_tokens_and_boxes(
+        return prepare_layoutlmv3_inputs(
+            image=receipt.image_path,
+            words=receipt.words,
+            boxes=receipt.boxes,
             tokenizer=self.tokenizer,
-            words=item.words,
-            boxes=item.boxes,
-            word_labels=item.labels,
+            image_processor=self.image_processor,
+            word_labels=receipt.labels,
             max_seq_length=self.max_seq_length,
+            image_size=self.image_size,
+            return_word_ids=False,
+            as_numpy=False,
         )
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "bbox": bbox,
-            "labels": labels,
-            "pixel_values": pixel_values,
-        }
 
 
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Collates a list of dataset sample dicts into a batched tensor dict."""
-    if HAS_TORCH and torch is not None:
-        return {
-            "input_ids": torch.stack([x["input_ids"] for x in batch]),
-            "attention_mask": torch.stack([x["attention_mask"] for x in batch]),
-            "bbox": torch.stack([x["bbox"] for x in batch]),
-            "labels": torch.stack([x["labels"] for x in batch]),
-            "pixel_values": torch.stack([x["pixel_values"] for x in batch]),
-        }
-    return {
-        "input_ids": np.stack([x["input_ids"] for x in batch]),
-        "attention_mask": np.stack([x["attention_mask"] for x in batch]),
-        "bbox": np.stack([x["bbox"] for x in batch]),
-        "labels": np.stack([x["labels"] for x in batch]),
-        "pixel_values": np.stack([x["pixel_values"] for x in batch]),
-    }
+    keys = batch[0].keys()
+    if HAS_TORCH and torch is not None and isinstance(batch[0][next(iter(keys))], torch.Tensor):
+        return {k: torch.stack([b[k] for b in batch]) for k in keys}
+    return {k: np.stack([np.asarray(b[k]) for b in batch]) for k in keys}

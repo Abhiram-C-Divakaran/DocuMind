@@ -184,33 +184,34 @@ def test_annotation_alignment_unmatched():
 
 def test_dataset_preparation_and_zero_leakage(tmp_path: Path):
     data_dir = tmp_path / "sroie_test"
-    splits = prepare_sroie_dataset(
-        output_dir=data_dir,
-        generate_synthetic_if_missing=True,
+    summary = prepare_sroie_dataset(
+        output_dir=str(data_dir),
+        allow_synthetic=True,
         seed=123,
     )
 
-    assert "train" in splits
-    assert "val" in splits
-    assert "test" in splits
-    assert len(splits["train"]) > 0
-    assert len(splits["val"]) > 0
-    assert len(splits["test"]) > 0
-
-    # Test data leakage checker
-    violations = check_data_leakage(splits)
-    assert len(violations) == 0
+    assert summary["is_synthetic"] is True
+    assert summary["counts"]["train"] > 0
+    assert summary["counts"]["validation"] > 0
+    assert summary["counts"]["test"] > 0
+    assert summary["leakage"]["has_leakage"] is False
 
     # Verify JSONL persistence and reloading
     train_loaded = load_aligned_receipts(data_dir / "train.jsonl")
-    assert len(train_loaded) == len(splits["train"])
-    assert train_loaded[0].receipt_id == splits["train"][0].receipt_id
+    val_loaded = load_aligned_receipts(data_dir / "validation.jsonl")
+    test_loaded = load_aligned_receipts(data_dir / "test.jsonl")
+    assert len(train_loaded) == summary["counts"]["train"]
+
+    leak_report = check_data_leakage(train_loaded, val_loaded, test_loaded)
+    assert leak_report["has_leakage"] is False
 
     # Test validation report generation
+    splits = {"train": train_loaded, "validation": val_loaded, "test": test_loaded}
     report = generate_dataset_validation_report(splits, output_dir=data_dir)
-    assert report["total_records"] == len(splits["train"]) + len(splits["val"]) + len(splits["test"])
+    assert report["total_records"] == len(train_loaded) + len(val_loaded) + len(test_loaded)
     assert (data_dir / "validation_report.json").exists()
     assert (data_dir / "validation_report.md").exists()
+    assert (data_dir / "dataset_manifest.json").exists()
 
 
 def test_token_and_box_alignment_with_subword_masking():

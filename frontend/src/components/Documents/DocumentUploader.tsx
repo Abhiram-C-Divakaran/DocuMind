@@ -212,9 +212,9 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
                 {
                   id: 'LAYOUTLMV3',
                   label: 'LayoutLMv3',
-                  badge: 'Phase 2B (Upcoming)',
-                  desc: 'Multimodal transformer for SROIE',
-                  disabled: true,
+                  badge: 'Multimodal ML',
+                  desc: 'Fine-tuned transformer (requires checkpoint)',
+                  disabled: false,
                 },
               ].map((opt) => (
                 <button
