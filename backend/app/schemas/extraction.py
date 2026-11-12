@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -29,7 +29,10 @@ class ExtractionResultBase(BaseModel):
     extraction_method: str = Field(..., description="Method or model used (e.g. PLACEHOLDER, TESSERACT_BASELINE, LAYOUTLMV3)")
     structured_data: Optional[StructuredExtractionData] = Field(None, description="Parsed structured fields")
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Overall confidence score")
+    field_confidences: Optional[Dict[str, float]] = Field(default=None, description="Field-level confidence estimates")
+    raw_text: Optional[str] = Field(default=None, description="Raw OCR text extracted from document")
     validation_errors: List[str] = Field(default_factory=list, description="Validation issues detected in extracted data")
+    extraction_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Detailed OCR and evidence metadata")
 
 
 class ExtractionResultResponse(ExtractionResultBase):
@@ -38,4 +41,3 @@ class ExtractionResultResponse(ExtractionResultBase):
     id: str
     document_id: str
     created_at: datetime
-

@@ -18,7 +18,7 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 @router.post("", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile = File(..., description="Document file to upload (PDF, PNG, JPEG)"),
-    extraction_method: Optional[str] = Form(None, description="Optional extraction method (PLACEHOLDER, TESSERACT_BASELINE, LAYOUTLMV3)"),
+    extraction_method: Optional[str] = Form(None, description="Optional extraction method (TESSERACT_BASELINE, PLACEHOLDER)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -28,6 +28,7 @@ async def upload_document(
     - Declared MIME type inspection
     - Magic byte file signature detection
     - Secure UUID disk storage outside public web paths
+    - OCR extraction via Tesseract baseline
     """
     if not file.filename:
         raise FileValidationError("Uploaded file has no filename.")
@@ -39,7 +40,7 @@ async def upload_document(
         f"Received upload request for '{file.filename}', claimed type '{content_type}', size {len(content)} bytes"
     )
 
-    document = await document_service.create_document_from_upload(
+    document, message = await document_service.create_document_from_upload(
         db=db,
         filename=file.filename,
         content_type=content_type,
@@ -49,7 +50,7 @@ async def upload_document(
 
     return DocumentUploadResponse(
         document=DocumentResponse.model_validate(document),
-        message=f"Document '{document.original_filename}' uploaded and queued successfully.",
+        message=message,
     )
 
 
@@ -95,8 +96,7 @@ async def get_document(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retrieves a single document with its full extraction history and validation errors.
+    Retrieves a single document with its full extraction history, field confidences, and validation errors.
     """
     document = await document_service.get_document_by_id(db, document_id)
     return DocumentResponse.model_validate(document)
-

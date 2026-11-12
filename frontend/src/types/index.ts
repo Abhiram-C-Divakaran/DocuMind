@@ -7,6 +7,7 @@ export interface LineItem {
   quantity?: number | string | null;
   unit_price?: number | string | null;
   total_price?: number | string | null;
+  experimental?: boolean;
 }
 
 export interface StructuredExtractionData {
@@ -25,7 +26,10 @@ export interface ExtractionResult {
   extraction_method: string;
   structured_data: StructuredExtractionData | null;
   confidence: number | null;
+  field_confidences?: Record<string, number> | null;
+  raw_text?: string | null;
   validation_errors: string[];
+  extraction_metadata?: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -70,7 +74,7 @@ export interface HealthStatus {
     database: string;
     storage: string;
   };
-  phase: number;
+  phase: number | string;
 }
 
 export interface ApiError {
@@ -78,4 +82,3 @@ export interface ApiError {
   message: string;
   details?: Record<string, unknown>;
 }
-

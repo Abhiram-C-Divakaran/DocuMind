@@ -12,6 +12,7 @@ class ExtractionOutput:
     structured_data: Optional[Dict[str, Any]] = None
     raw_text: Optional[str] = None
     confidence: Optional[float] = None
+    field_confidences: Optional[Dict[str, float]] = None
     validation_errors: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -23,6 +24,7 @@ class ExtractionOutput:
             "structured_data": self.structured_data,
             "raw_text": self.raw_text,
             "confidence": self.confidence,
+            "field_confidences": self.field_confidences,
             "validation_errors": self.validation_errors,
             "metadata": self.metadata,
             "timestamp": self.timestamp.isoformat(),

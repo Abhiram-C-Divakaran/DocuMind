@@ -20,7 +20,7 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [extractionMethod, setExtractionMethod] = useState<string>('PLACEHOLDER');
+  const [extractionMethod, setExtractionMethod] = useState<string>('TESSERACT_BASELINE');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [validationWarning, setValidationWarning] = useState<string | null>(null);
@@ -196,31 +196,36 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {[
                 {
-                  id: 'PLACEHOLDER',
-                  label: 'Phase 1 Standard',
-                  badge: 'Active',
-                  desc: 'Records audit log without fake inference',
-                },
-                {
                   id: 'TESSERACT_BASELINE',
                   label: 'Tesseract OCR',
-                  badge: 'Phase 2 Baseline',
-                  desc: 'OCR + heuristic regex rules contract',
+                  badge: 'Phase 2A Active',
+                  desc: 'Real OCR + rule-based receipt extraction',
+                  disabled: false,
+                },
+                {
+                  id: 'PLACEHOLDER',
+                  label: 'Placeholder Only',
+                  badge: 'Ledger Only',
+                  desc: 'Records upload record without inference',
+                  disabled: false,
                 },
                 {
                   id: 'LAYOUTLMV3',
                   label: 'LayoutLMv3',
-                  badge: 'Phase 2 SROIE',
-                  desc: 'Multimodal transformer contract',
+                  badge: 'Phase 2B (Upcoming)',
+                  desc: 'Multimodal transformer for SROIE',
+                  disabled: true,
                 },
               ].map((opt) => (
                 <button
                   key={opt.id}
                   type="button"
-                  disabled={isUploading}
-                  onClick={() => setExtractionMethod(opt.id)}
+                  disabled={isUploading || opt.disabled}
+                  onClick={() => !opt.disabled && setExtractionMethod(opt.id)}
                   className={`p-3 text-left rounded-lg border text-xs transition-all ${
-                    extractionMethod === opt.id
+                    opt.disabled
+                      ? 'border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed'
+                      : extractionMethod === opt.id
                       ? 'border-indigo-600 bg-indigo-50/80 shadow-2xs'
                       : 'border-slate-200 hover:border-slate-300 bg-white'
                   }`}
@@ -229,7 +234,7 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
                     <span className="font-semibold text-slate-800">{opt.label}</span>
                     <span
                       className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                        opt.id === 'PLACEHOLDER'
+                        opt.id === 'TESSERACT_BASELINE'
                           ? 'bg-emerald-100 text-emerald-800'
                           : 'bg-slate-100 text-slate-600'
                       }`}

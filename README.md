@@ -1,17 +1,36 @@
-# DocuMind - Multimodal Document Intelligence Platform (Phase 1)
+# DocuMind — Multimodal Document Intelligence Platform
 
-DocuMind is a production-oriented multimodal document intelligence platform designed to ingest scanned receipts and invoices, validate integrity via binary signatures, extract structured tabular and entity data, and maintain an immutable processing ledger.
+DocuMind is a production-oriented multimodal document intelligence platform designed to ingest scanned receipts and invoices, validate binary file integrity, perform high-resolution OCR, extract structured tabular and entity data, and maintain an immutable processing ledger.
 
-Phase 1 establishes the enterprise-grade foundation: secure multipart ingestion, SQLAlchemy ORM with Alembic migrations, Pydantic v2 validation contracts, a modern React + Vite + Tailwind CSS frontend dashboard, typed API client, and extensible ML baseline interfaces ready for Phase 2 fine-tuning on the SROIE benchmark.
+**Current Release**: **Phase 2A (Functioning Tesseract OCR & Rule-Based Extraction)**
 
 ---
 
-## Architecture Overview
+## What's New in Phase 2A
+
+- **Functioning Tesseract OCR Engine**: Real text recognition and word tokenization using `pytesseract` and OpenCV (headless).
+- **PDF-to-Image Rasterization**: High-resolution multi-page PDF rendering via `PyMuPDF` with configurable DPI (default `300 DPI`) and page resource bounds.
+- **Computer Vision Pre-processing**: Grayscale conversion, CLAHE contrast enhancement, Gaussian denoising, and automated orientation deskewing.
+- **Multimodal Coordinates**: Normalizes all word bounding boxes to a `0–1000` integer coordinate grid ready for LayoutLMv3 integration.
+- **Deterministic Field Extraction**:
+  - **Vendor / Merchant**: Header layout analysis, font-size weighting, exclusion filter for tax/invoice headers.
+  - **Document Date**: Parsing for ISO, DD/MM/YYYY, MM/DD/YYYY, and textual dates with configurable ambiguity handling (`DEFAULT_DATE_FORMAT_ORDER=DMY`).
+  - **Financial Totals**: Keyword proximity parsing (`TOTAL`, `GRAND TOTAL`, `AMOUNT PAID`, `BALANCE DUE`), decimal-safe conversion, subtotal/cash separation.
+  - **Taxes**: Extraction and validation ensuring $\mathrm{Tax} \le \mathrm{Total}$.
+  - **Currency Normalization**: Automatic mapping of symbols (`$`, `₹`, `€`, `£`, `¥`) and ISO codes (`USD`, `INR`, `EUR`, `GBP`).
+  - **Vendor Address**: Contextual line extraction below vendor names.
+  - **Line Items**: Experimental tabular itemization.
+- **Heuristic Confidence & Integrity Checks**: Weighted field-level confidences, overall confidence scores, and automatic flags for manual review.
+- **Frontend Upgrades**: Document details modal displaying structured entities, confidence badges, validation warnings, and a collapsible raw OCR text viewer.
+
+---
+
+## Repository Structure
 
 ```
 Doc/
 ├── backend/                  # FastAPI backend service
-│   ├── alembic/              # Database migration definitions
+│   ├── alembic/              # Database migration definitions (001, 002)
 │   ├── app/
 │   │   ├── api/              # API routes (/health, /api/v1/documents)
 │   │   ├── core/             # Central error handlers and middleware
@@ -22,7 +41,7 @@ Doc/
 │   │   ├── database.py       # Async SQLAlchemy session and connection engine
 │   │   ├── logger.py         # Structured logging formatter
 │   │   └── main.py           # Application entrypoint with CORS & lifecycle
-│   ├── requirements.txt      # Python dependencies
+│   ├── requirements.txt      # Python dependencies (OpenCV, PyMuPDF, pytesseract)
 │   └── pyproject.toml        # Backend build & pytest configuration
 ├── frontend/                 # React 18 + TypeScript + Vite + Tailwind CSS
 │   ├── src/
@@ -39,20 +58,17 @@ Doc/
 │   ├── vite.config.ts
 │   └── tailwind.config.js
 ├── ml/                       # Extensible ML extraction subsystem
+│   ├── ocr/                  # Real OCR engine, PDF converter, pre-processing
+│   ├── extraction/           # Rule-based field extraction & validation pipelines
 │   ├── extractors/
-│   │   ├── placeholder.py    # Phase 1 transparent stub (no fake inferences)
-│   │   ├── tesseract_baseline.py # Tesseract OCR + regex rules interface
-│   │   └── layoutlmv3_extractor.py # Multimodal transformer interface for SROIE
+│   │   ├── tesseract_baseline.py # Functioning Tesseract OCR baseline extractor
+│   │   ├── layoutlmv3_extractor.py # Multimodal transformer interface for Phase 2B
+│   │   └── placeholder.py    # Phase 1 transparent stub
 │   ├── base.py               # BaseExtractor abstract contract & ExtractionOutput
-│   └── schemas.py            # ML data schemas
+│   └── README.md             # Detailed ML subsystem documentation
 ├── storage/
 │   └── uploads/              # Local storage isolated from web root (safe UUIDs)
-├── tests/                    # Pytest suite
-│   ├── conftest.py           # In-memory async SQLite engine & test client
-│   ├── test_health.py        # Health and component verification
-│   ├── test_upload_validation.py # Magic bytes, MIME types & size limit tests
-│   ├── test_document_persistence.py # Document and extraction lifecycle
-│   └── test_ml_interfaces.py # Extractor contracts & provenance
+├── tests/                    # Pytest suite (32 unit & integration tests)
 ├── docker-compose.yml        # PostgreSQL 16 container definition
 ├── .env.example              # Documented configuration template
 └── README.md
@@ -60,125 +76,107 @@ Doc/
 
 ---
 
-## Security & Validation Architecture
+## Installation & System Prerequisites
 
-1. **Dual Signature & MIME Verification**:
-   - Files are validated using both the client-declared `Content-Type` header and actual byte headers (**magic bytes**):
-     - PDF: `%PDF-` (`0x25, 0x50, 0x44, 0x46, 0x2D`)
-     - PNG: `\x89PNG\r\n\x1a\n` (`0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A`)
-     - JPEG: `\xff\xd8\xff` SOI marker
-   - Rejects corrupted files, mismatched headers (e.g. executable or text files disguised as PDF), and unsupported extensions.
-2. **File Size Enforcement**: Default limit of 15 MB (configurable via `MAX_FILE_SIZE_MB`), rejecting oversized payloads with HTTP 413.
-3. **Directory Traversal Protection**: Files are stored using cryptographic UUIDv4 filenames (`<uuid4>.<ext>`) in a dedicated directory outside publicly accessible web roots.
-4. **Decimal-Safe Financial Arithmetic**: All financial values (`total_amount`, `tax_amount`, `unit_price`) utilize Python's `Decimal` type to prevent IEEE 754 floating-point rounding errors.
+### 1. Tesseract OCR Executable (System Dependency)
 
----
+Tesseract is a real system dependency:
 
-## Quickstart & Installation
+- **Windows**:
+  1. Download the installer from the [UB-Mannheim Tesseract Wiki](https://github.com/UB-Mannheim/tesseract/wiki).
+  2. Install to `C:\Program Files\Tesseract-OCR`.
+  3. Add `C:\Program Files\Tesseract-OCR` to your System `PATH`, or set `TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe` in your `.env`.
+- **Linux (Ubuntu / Debian)**:
+  ```bash
+  sudo apt-get update && sudo apt-get install -y tesseract-ocr libtesseract-dev
+  ```
+- **macOS**:
+  ```bash
+  brew install tesseract
+  ```
 
-### 1. Prerequisites
-- **Python 3.11+**
-- **Node.js 18+** and **npm**
-- **Docker & Docker Compose** (Optional for PostgreSQL; SQLite runs out of the box)
-
-### 2. Clone and Configure Environment
+### 2. Python Backend Setup
 
 ```bash
-# Copy environment configuration
-cp .env.example .env
-```
-
-### 3. Backend Setup
-
-```bash
-# Create and activate Python virtual environment
-python -m venv .venv
-
-# On Windows:
+# 1. Activate virtual environment
+# Windows:
 .venv\Scripts\activate
-# On Linux/macOS:
+# Linux/macOS:
 source .venv/bin/activate
 
-# Install dependencies
+# 2. Install dependencies
 pip install -r backend/requirements.txt
 
-# Run database migrations (or rely on auto-table creation on startup)
-alembic -c backend/alembic.ini upgrade head
+# 3. Run database migrations
+python -m alembic -c backend/alembic.ini upgrade head
 
-# Start FastAPI development server
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+# 4. Start FastAPI server
+python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-FastAPI will be available at:
+The backend is accessible at:
 - **API Root**: `http://localhost:8000`
-- **Swagger Interactive Docs**: `http://localhost:8000/docs`
+- **Swagger Documentation**: `http://localhost:8000/docs`
 - **Health Check**: `http://localhost:8000/health`
 
-### 4. Database via Docker Compose (PostgreSQL)
-
-If using PostgreSQL rather than the default SQLite:
-
-```bash
-# Start PostgreSQL container
-docker-compose up -d
-
-# Update .env:
-# DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/documind
-```
-
-### 5. Frontend Setup
+### 3. Frontend Dashboard Setup
 
 ```bash
 cd frontend
 
-# Install npm dependencies
+# Install dependencies
 npm install
 
 # Start Vite development server
 npm run dev
 ```
 
-The frontend application will be running at `http://localhost:5173`.
+The frontend dashboard is accessible at `http://localhost:5173`.
 
 ---
 
-## API Endpoints Reference
+## Sample Document Upload via CLI
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/health` | Service health, database connectivity & storage verification |
-| `POST` | `/api/v1/documents` | Multipart document upload (PDF, PNG, JPEG) with signature check |
-| `GET` | `/api/v1/documents` | Paginated document ledger with filtering (`status`, `search`) |
-| `GET` | `/api/v1/documents/{id}` | Detailed document view with structured extractions and error log |
-| `GET` | `/api/v1/documents/metrics/summary` | Telemetry counts (Total, Completed, Pending, Failed) |
+Upload a receipt or invoice directly to the FastAPI API using curl or PowerShell:
+
+```bash
+# Using curl (default method is TESSERACT_BASELINE)
+curl -X POST "http://localhost:8000/api/v1/documents" \
+  -F "file=@receipt_sample.png" \
+  -F "extraction_method=TESSERACT_BASELINE"
+```
+
+In PowerShell:
+```powershell
+$form = @{
+    file = Get-Item -Path "receipt_sample.png"
+    extraction_method = "TESSERACT_BASELINE"
+}
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/documents" -Method Post -Form $form
+```
 
 ---
 
 ## Running the Automated Test Suite
 
-The test suite exercises the health probe, magic byte validation, MIME rejection, file size limits, document persistence, and ML interface contracts:
+Run the 32-test automated suite exercising OCR logic, date parsing, financial normalization, PDF conversion, persistence, and error handling:
 
 ```bash
-# Run tests with pytest
-.venv\Scripts\pytest -v tests
+python -m pytest -v tests
 ```
 
 ---
 
-## Phase 2 Machine Learning Plan
+## Known OCR Limitations
 
-In Phase 2, DocuMind will advance from structural placeholder contracts to production models:
+1. **Physical Receipt Degradation**: Severe physical crumpling, heavy shadows, or faded thermal paper may degrade OCR character recognition.
+2. **Dense Multi-Column Receipts**: Complex column structures without clear delimiters can cause horizontal text merging, best handled by multimodal models (Phase 2B).
+3. **Handwritten Annotations**: Tesseract's standard English model is trained for printed typography; handwriting recognition is limited.
 
-1. **Benchmark Dataset**:
-   - Ingest the **SROIE** (Scanned Receipts OCR and Information Extraction) benchmark (1,000 scanned receipts).
-   - Establish evaluation splits (Train: 600, Validation: 100, Test: 300).
-2. **Classical Baseline**:
-   - Calibrate the `TesseractBaselineExtractor` using PyTesseract OCR with bounding box extraction (`hOCR`).
-   - Implement regex-based heuristic field parsing for vendor, date, address, and totals.
-3. **Multimodal Transformer**:
-   - Fine-tune `microsoft/layoutlmv3-base` on token classification utilizing visual tokens, 2D normalized bounding boxes, and OCR text tokens.
-   - Target entity tags: `COMPANY`, `DATE`, `ADDRESS`, `TOTAL`.
-4. **Evaluation & Comparison**:
-   - Run side-by-side benchmarking measuring **Entity F1 Score**, **Character Error Rate (CER)**, **Inference Latency (ms)**, and **GPU Memory Consumption**.
-   - Deploy as an asynchronous background worker using Celery or Redis Queue.
+---
 
+## Phase 2B Roadmap: SROIE Benchmark & LayoutLMv3
+
+1. **SROIE Dataset Curation**: Parse and split 1,000 scanned receipts with ground-truth bounding box coordinates (`data/sroie/`).
+2. **LayoutLMv3 Fine-Tuning**: Fine-tune `microsoft/layoutlmv3-base` on token classification with BIO labels (`B-VENDOR`, `I-VENDOR`, `B-DATE`, `I-DATE`, `B-TOTAL`, `I-TOTAL`, `B-ADDRESS`, `I-ADDRESS`).
+3. **Side-by-Side Benchmarking**: Evaluate Tesseract baseline vs. fine-tuned LayoutLMv3 measuring Entity F1 Score, Character Error Rate (CER), inference latency (ms), and VRAM footprint.

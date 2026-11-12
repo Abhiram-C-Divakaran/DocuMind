@@ -68,7 +68,7 @@ class ApiClient {
 
   async uploadDocument(
     file: File,
-    extractionMethod: string = 'PLACEHOLDER'
+    extractionMethod: string = 'TESSERACT_BASELINE'
   ): Promise<DocumentUploadResponse> {
     const formData = new FormData();
     formData.append('file', file);

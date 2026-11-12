@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.config import settings
-from backend.app.core.exceptions import DocumentNotFoundError
+from backend.app.core.exceptions import DocumentNotFoundError, FileValidationError
 from backend.app.logger import logger
 from backend.app.models.document import Document, DocumentStatus
 from backend.app.models.extraction import ExtractionMethod, ExtractionResult
@@ -14,13 +14,28 @@ from backend.app.services.storage import storage_service
 from backend.app.services.validator import validate_file
 from ml.extractors import LayoutLMv3Extractor, PlaceholderExtractor, TesseractBaselineExtractor
 
+VALID_EXTRACTION_METHODS = {
+    ExtractionMethod.TESSERACT_BASELINE.value,
+    ExtractionMethod.PLACEHOLDER.value,
+}
+
 
 def get_extractor(method_name: str):
-    method = method_name.upper()
+    method = method_name.upper().strip()
+    if method == ExtractionMethod.LAYOUTLMV3.value:
+        raise FileValidationError(
+            "LayoutLMv3 multimodal extraction is unavailable in Phase 2A. "
+            "Model fine-tuning and weight checkpoints are scheduled for Phase 2B. "
+            "Please use extraction_method='TESSERACT_BASELINE'."
+        )
+    if method not in VALID_EXTRACTION_METHODS:
+        raise FileValidationError(
+            f"Unsupported extraction method '{method_name}'. "
+            f"Allowed methods: {', '.join(sorted(VALID_EXTRACTION_METHODS))}."
+        )
+
     if method == ExtractionMethod.TESSERACT_BASELINE.value:
         return TesseractBaselineExtractor()
-    elif method == ExtractionMethod.LAYOUTLMV3.value:
-        return LayoutLMv3Extractor()
     return PlaceholderExtractor()
 
 
@@ -32,24 +47,36 @@ class DocumentService:
         content_type: str,
         file_bytes: bytes,
         extraction_method: Optional[str] = None,
-    ) -> Document:
+    ) -> Tuple[Document, str]:
         """
-        Validates, persists, records and initiates initial extraction record for an uploaded document.
+        Validates, persists, records and executes extraction for an uploaded document.
+        Returns:
+            Tuple of (document, status_message)
         """
-        # 1. Validate signature, MIME type, file size
+        # 1. Validate requested extraction method
+        method_str = (extraction_method or settings.DEFAULT_EXTRACTION_METHOD).upper().strip()
+        extractor = get_extractor(method_str)
+
+        # 2. Validate signature, MIME type, file size
         detected_mime, ext = validate_file(
             filename=filename,
             content_type=content_type,
             file_bytes=file_bytes,
         )
 
-        # 2. Persist safely to disk outside public paths
+        # 3. Persist safely to disk outside public paths
         file_id, stored_filename, file_path = storage_service.save_file(
             file_bytes=file_bytes,
             extension=ext,
         )
 
-        # 3. Create document record
+        # 4. Create document record with PROCESSING or PENDING
+        initial_status = (
+            DocumentStatus.PROCESSING.value
+            if extractor.method_name == ExtractionMethod.TESSERACT_BASELINE.value
+            else DocumentStatus.PENDING.value
+        )
+
         document = Document(
             id=file_id,
             original_filename=filename,
@@ -57,44 +84,96 @@ class DocumentService:
             file_path=file_path,
             file_size_bytes=len(file_bytes),
             content_type=detected_mime,
-            status=DocumentStatus.PENDING.value,
+            status=initial_status,
         )
         db.add(document)
         await db.commit()
         await db.refresh(document)
 
-        # 4. Run extractor (Phase 1 placeholder/contract)
-        method = extraction_method or settings.DEFAULT_EXTRACTION_METHOD
-        extractor = get_extractor(method)
-        try:
+        status_message: str
+
+        # 5. Run extraction
+        if extractor.method_name == ExtractionMethod.TESSERACT_BASELINE.value:
+            try:
+                extraction_output = await extractor.extract(Path(file_path))
+
+                # Save successful extraction
+                extraction_record = ExtractionResult(
+                    document_id=document.id,
+                    extraction_method=extractor.method_name,
+                    structured_data=extraction_output.structured_data,
+                    confidence=extraction_output.confidence,
+                    field_confidences=extraction_output.field_confidences,
+                    raw_text=extraction_output.raw_text,
+                    validation_errors=extraction_output.validation_errors,
+                    extraction_metadata=extraction_output.metadata,
+                )
+                db.add(extraction_record)
+
+                document.status = DocumentStatus.COMPLETED.value
+                document.updated_at = datetime.now(timezone.utc)
+                await db.commit()
+                await db.refresh(document)
+
+                status_message = (
+                    f"Document '{document.original_filename}' processed successfully via Tesseract OCR."
+                )
+                logger.info(f"Document {document.id} successfully processed via Tesseract OCR.")
+
+            except Exception as e:
+                sanitized_error = str(e)
+                logger.error(f"Error executing OCR extraction on document {document.id}: {sanitized_error}")
+
+                document.status = DocumentStatus.FAILED.value
+                document.error_message = sanitized_error
+                document.updated_at = datetime.now(timezone.utc)
+
+                # Persist failed extraction record with error explanation
+                failed_extraction = ExtractionResult(
+                    document_id=document.id,
+                    extraction_method=extractor.method_name,
+                    structured_data=None,
+                    confidence=0.0,
+                    field_confidences=None,
+                    raw_text=None,
+                    validation_errors=[sanitized_error],
+                    extraction_metadata={"status": "FAILED", "error": sanitized_error},
+                )
+                db.add(failed_extraction)
+                await db.commit()
+                await db.refresh(document)
+
+                status_message = (
+                    f"Document '{document.original_filename}' uploaded but OCR processing failed: {sanitized_error}"
+                )
+
+        else:
+            # PLACEHOLDER extraction mode: status remains PENDING
             extraction_output = await extractor.extract(Path(file_path))
-            
-            # Record extraction result
             extraction_record = ExtractionResult(
                 document_id=document.id,
                 extraction_method=extractor.method_name,
-                structured_data=extraction_output.structured_data,
-                confidence=extraction_output.confidence,
+                structured_data=None,
+                confidence=None,
+                field_confidences=None,
+                raw_text=None,
                 validation_errors=extraction_output.validation_errors,
+                extraction_metadata=extraction_output.metadata,
             )
             db.add(extraction_record)
 
-            # In Phase 1 placeholder mode, document is marked COMPLETED with placeholder result
-            # or PENDING if scheduled for background worker.
-            document.status = DocumentStatus.COMPLETED.value
+            document.status = DocumentStatus.PENDING.value
             document.updated_at = datetime.now(timezone.utc)
             await db.commit()
             await db.refresh(document)
-            logger.info(f"Created extraction result for document {document.id} via {extractor.method_name}")
-        except Exception as e:
-            logger.error(f"Error executing extraction on document {document.id}: {e}")
-            document.status = DocumentStatus.FAILED.value
-            document.error_message = str(e)
-            await db.commit()
-            await db.refresh(document)
+
+            status_message = (
+                f"Document '{document.original_filename}' uploaded in placeholder mode (status: PENDING)."
+            )
 
         # Return document with extractions eagerly loaded
-        return await self.get_document_by_id(db, document.id)
+        refreshed_doc = await self.get_document_by_id(db, document.id)
+        return refreshed_doc, status_message
 
     async def get_document_by_id(self, db: AsyncSession, document_id: str) -> Document:
         query = (

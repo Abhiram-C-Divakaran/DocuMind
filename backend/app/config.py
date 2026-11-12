@@ -1,5 +1,5 @@
 import os
-from typing import List, Union
+from typing import List, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,8 +29,14 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "storage/uploads"
     MAX_FILE_SIZE_MB: int = 15
 
-    DEFAULT_EXTRACTION_METHOD: str = "PLACEHOLDER"
-    ENABLE_ML_INFERENCE: bool = False
+    # ML & OCR Pipeline Configuration
+    DEFAULT_EXTRACTION_METHOD: str = "TESSERACT_BASELINE"
+    ENABLE_ML_INFERENCE: bool = True
+    TESSERACT_CMD: Optional[str] = None
+    OCR_PDF_DPI: int = 300
+    OCR_MAX_PAGES: int = 5
+    OCR_CONFIDENCE_THRESHOLD: float = 0.60
+    DEFAULT_DATE_FORMAT_ORDER: str = "DMY"
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -45,4 +51,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

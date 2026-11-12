@@ -37,5 +37,5 @@ async def health_check(db: AsyncSession = Depends(get_db)):
             "database": db_status,
             "storage": storage_status,
         },
-        "phase": 1,
+        "phase": "2A",
     }

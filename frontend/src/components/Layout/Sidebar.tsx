@@ -102,7 +102,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           <div className="flex justify-between">
             <span>Phase:</span>
-            <span className="text-indigo-400 font-semibold">1 (Foundation)</span>
+            <span className="text-indigo-400 font-semibold">2A (OCR Pipeline)</span>
           </div>
         </div>
       </div>
