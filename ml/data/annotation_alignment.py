@@ -178,3 +178,4 @@ def align_receipt_annotations(
         width=width,
         height=height,
     )
+

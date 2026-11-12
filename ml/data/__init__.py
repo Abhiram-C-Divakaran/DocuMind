@@ -23,3 +23,4 @@ __all__ = [
     "LABEL2ID",
     "ENTITIES",
 ]
+
