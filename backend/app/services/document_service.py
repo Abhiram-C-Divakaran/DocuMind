@@ -16,23 +16,29 @@ from ml.extractors import LayoutLMv3Extractor, PlaceholderExtractor, TesseractBa
 
 VALID_EXTRACTION_METHODS = {
     ExtractionMethod.TESSERACT_BASELINE.value,
+    ExtractionMethod.LAYOUTLMV3.value,
     ExtractionMethod.PLACEHOLDER.value,
 }
 
 
 def get_extractor(method_name: str):
     method = method_name.upper().strip()
-    if method == ExtractionMethod.LAYOUTLMV3.value:
-        raise FileValidationError(
-            "LayoutLMv3 multimodal extraction is unavailable in Phase 2A. "
-            "Model fine-tuning and weight checkpoints are scheduled for Phase 2B. "
-            "Please use extraction_method='TESSERACT_BASELINE'."
-        )
     if method not in VALID_EXTRACTION_METHODS:
         raise FileValidationError(
             f"Unsupported extraction method '{method_name}'. "
             f"Allowed methods: {', '.join(sorted(VALID_EXTRACTION_METHODS))}."
         )
+
+    if method == ExtractionMethod.LAYOUTLMV3.value:
+        extractor = LayoutLMv3Extractor()
+        if not extractor.is_checkpoint_available():
+            raise FileValidationError(
+                f"LayoutLMv3 multimodal extraction is unavailable in Phase 2A / without fine-tuned weights. "
+                f"Model checkpoint is not available at '{extractor.checkpoint_dir}'. "
+                "Please run the Phase 2B fine-tuning pipeline ('python -m ml.training.train_layoutlmv3') "
+                "to produce trained model weights before selecting this extractor."
+            )
+        return extractor
 
     if method == ExtractionMethod.TESSERACT_BASELINE.value:
         return TesseractBaselineExtractor()

@@ -17,3 +17,10 @@ opencv-python-headless>=4.9.0.80
 PyMuPDF>=1.24.0
 numpy>=1.26.0
 python-dateutil>=2.9.0
+
+# Phase 2B Deep Learning & Transformers Dependencies
+torch>=2.0.0
+transformers>=4.38.0
+datasets>=2.18.0
+seqeval>=1.2.2
+accelerate>=0.28.0

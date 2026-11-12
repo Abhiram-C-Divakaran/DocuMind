@@ -1,0 +1,97 @@
+{
+  "num_test_receipts": 6,
+  "metrics": {
+    "baseline": {
+      "company_f1": 0.1577,
+      "date_f1": 1.0,
+      "address_f1": 0.0,
+      "total_f1": 0.0833,
+      "macro_f1": 0.3103,
+      "document_exact_match": 0.0,
+      "latency_ms": 1.85
+    },
+    "layoutlmv3": {
+      "company_f1": 0.0,
+      "date_f1": 0.0,
+      "address_f1": 0.0,
+      "total_f1": 0.0,
+      "macro_f1": 0.0,
+      "document_exact_match": 0.0,
+      "latency_ms": 0.0
+    }
+  },
+  "failure_analysis": {
+    "layoutlm_better_examples": [],
+    "baseline_better_examples": [
+      {
+        "receipt_id": "sroie_syn_0008",
+        "ground_truth": {
+          "company": "BOOK MART SDN BHD",
+          "address": "NO 12 JALAN BUKIT BINTANG, 55100 KUALA LUMPUR",
+          "date": "09/05/2018",
+          "total": "53.80"
+        },
+        "baseline_prediction": {
+          "company": "BOOK MART SDN BHD NO 12 JALAN BUKIT BINTANG, 55100 KUALA LUMPUR DATE: 09/05/2018 ITEM QTY PRICE TOTAL BOOK 1 30.00 30.00 TAX GST 6% 2.60 TOTAL AMOUNT RM 53.80",
+          "date": "2018-05-09",
+          "address": null,
+          "total": "55100.00"
+        },
+        "layoutlmv3_prediction": {
+          "company": null,
+          "date": null,
+          "address": null,
+          "total": null
+        }
+      },
+      {
+        "receipt_id": "sroie_syn_0014",
+        "ground_truth": {
+          "company": "PETRONAS DAGANGAN",
+          "address": "KM 12 LEBUHRAYA PLUS, 43000 KAJANG",
+          "date": "15/05/2018",
+          "total": "84.00"
+        },
+        "baseline_prediction": {
+          "company": "PETRONAS DAGANGAN KM 12 LEBUHRAYA PLUS, 43000 KAJANG DATE: 15/05/2018 ITEM QTY PRICE TOTAL BOOK 1 30.00 30.00 TAX GST 6% 2.60 TOTAL AMOUNT RM 84.00",
+          "date": "2018-05-15",
+          "address": null,
+          "total": "43000.00"
+        },
+        "layoutlmv3_prediction": {
+          "company": null,
+          "date": null,
+          "address": null,
+          "total": null
+        }
+      },
+      {
+        "receipt_id": "sroie_syn_0015",
+        "ground_truth": {
+          "company": "GUARDIAN HEALTH",
+          "address": "NO 5 GROUND FLOOR, JALAN MEDAN, IPOH",
+          "date": "16/05/2018",
+          "total": "49.20"
+        },
+        "baseline_prediction": {
+          "company": "GUARDIAN HEALTH NO 5 GROUND FLOOR, JALAN MEDAN, IPOH DATE: 16/05/2018 ITEM QTY PRICE TOTAL BOOK 1 30.00 30.00 TAX GST 6% 2.60 TOTAL AMOUNT RM 49.20",
+          "date": "2018-05-16",
+          "address": null,
+          "total": "2018.00"
+        },
+        "layoutlmv3_prediction": {
+          "company": null,
+          "date": null,
+          "address": null,
+          "total": null
+        }
+      }
+    ],
+    "error_modes": [
+      "Misaligned bounding boxes or rotated receipts causing fragmented address spans",
+      "Ambiguous multiple totals (e.g. subtotal, discount, cash tendered, change)",
+      "Non-standard date formats (e.g. '04-OCT-18' vs numeric)",
+      "Company logo text recognized out-of-order in receipt headers"
+    ]
+  }
+}

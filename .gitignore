@@ -73,3 +73,14 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
+# Machine Learning & Datasets
+/data/
+/checkpoints/
+ml/checkpoints/
+ml/data_cache/
+*.pt
+*.bin
+*.safetensors
+wandb/
+runs/
+

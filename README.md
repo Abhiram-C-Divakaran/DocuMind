@@ -175,8 +175,30 @@ python -m pytest -v tests
 
 ---
 
-## Phase 2B Roadmap: SROIE Benchmark & LayoutLMv3
+## Phase 2B: SROIE Benchmark & LayoutLMv3 Multimodal System
 
-1. **SROIE Dataset Curation**: Parse and split 1,000 scanned receipts with ground-truth bounding box coordinates (`data/sroie/`).
-2. **LayoutLMv3 Fine-Tuning**: Fine-tune `microsoft/layoutlmv3-base` on token classification with BIO labels (`B-VENDOR`, `I-VENDOR`, `B-DATE`, `I-DATE`, `B-TOTAL`, `I-TOTAL`, `B-ADDRESS`, `I-ADDRESS`).
-3. **Side-by-Side Benchmarking**: Evaluate Tesseract baseline vs. fine-tuned LayoutLMv3 measuring Entity F1 Score, Character Error Rate (CER), inference latency (ms), and VRAM footprint.
+Phase 2B introduces deep learning multimodal extraction using Microsoft's `layoutlmv3-base`:
+1. **SROIE Dataset Pipeline (`ml/data/`)**: Canonical 9-label BIO scheme (`O`, `B-COMPANY`, `I-COMPANY`, `B-DATE`, `I-DATE`, `B-ADDRESS`, `I-ADDRESS`, `B-TOTAL`, `I-TOTAL`), annotation alignment with bounding box validation in `[0, 1000]`, reproducible seeded train/val/test splits, and zero cross-split data leakage detection.
+2. **LayoutLMv3 Training Pipeline (`ml/training/`)**: PyTorch `Dataset` with subword `-100` loss masking, 224x224 RGB image normalization, AdamW optimization, linear warmup, checkpointing based on validation F1, and a fast `--smoke-test` verification mode.
+3. **Evaluation & Comparative Benchmark (`ml/evaluation/`)**: Strict IOB2 entity metrics via `seqeval`, field-level and document-level exact match rates, latency and footprint analysis, and side-by-side benchmark comparison reporting against the Phase 2A baseline (`benchmark_comparison.md`).
+4. **FastAPI & UI Integration**: `LayoutLMv3Extractor` cleanly integrates into the backend service and React dashboard, validating checkpoints and returning structured JSON with confidence scores.
+
+### Quick Start Commands for Phase 2B
+```bash
+# 1. Prepare SROIE Dataset
+python -m ml.data.prepare_dataset --output-dir data/sroie_processed --seed 42
+
+# 2. Run Local Smoke Test
+python -m ml.training.train_layoutlmv3 --smoke-test --epochs 1 --batch-size 2
+
+# 3. Run Benchmark Comparison
+python -m ml.evaluation.compare_models --test-jsonl data/sroie_processed/test.jsonl
+```
+
+---
+
+## Phase 3 Roadmap: Production Serving & Active Learning
+
+1. **Active Learning Feedback Loop**: User manual corrections in the frontend dashboard feed back into an automated retraining queue.
+2. **ONNX Runtime / TensorRT Optimization**: Quantize LayoutLMv3 to INT8 for sub-30ms CPU/edge latency.
+3. **Multi-Page Invoice Tabular Understanding**: Integrate Table Transformer or LayoutLMv3 relation extraction for full itemized line-item extraction.

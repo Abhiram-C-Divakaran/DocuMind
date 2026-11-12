@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     OCR_MAX_PAGES: int = 5
     OCR_CONFIDENCE_THRESHOLD: float = 0.60
     DEFAULT_DATE_FORMAT_ORDER: str = "DMY"
+    LAYOUTLMV3_CHECKPOINT_DIR: str = "checkpoints/layoutlmv3-sroie-best"
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
