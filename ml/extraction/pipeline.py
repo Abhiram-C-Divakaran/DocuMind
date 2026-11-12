@@ -99,3 +99,4 @@ class ReceiptExtractionPipeline:
 
 
 pipeline = ReceiptExtractionPipeline()
+

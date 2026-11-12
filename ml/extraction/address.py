@@ -85,3 +85,4 @@ class AddressExtractor:
             raw_text=full_address,
             evidence=f"Matched {len(address_lines)} address lines: '{full_address}'",
         )
+

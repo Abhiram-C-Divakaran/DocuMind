@@ -83,3 +83,4 @@ def preprocess_image_for_ocr(
         return binary
 
     return blurred
+

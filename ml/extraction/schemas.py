@@ -30,3 +30,4 @@ class ReceiptExtractionResult:
     needs_manual_review: bool
     evidence_map: Dict[str, Any]
     metadata: Dict[str, Any]
+

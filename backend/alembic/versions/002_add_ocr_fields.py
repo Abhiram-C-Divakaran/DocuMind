@@ -28,3 +28,4 @@ def downgrade() -> None:
         batch_op.drop_column('extraction_metadata')
         batch_op.drop_column('field_confidences')
         batch_op.drop_column('raw_text')
+

@@ -99,3 +99,4 @@ class VendorExtractor:
             raw_text=best_name,
             evidence=best_evidence,
         )
+

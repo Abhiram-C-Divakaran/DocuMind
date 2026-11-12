@@ -39,3 +39,4 @@ def convert_pdf_to_images(
         return images, total_pages
     finally:
         doc.close()
+

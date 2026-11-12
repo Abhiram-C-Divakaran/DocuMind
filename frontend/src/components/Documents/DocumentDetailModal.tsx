@@ -127,11 +127,10 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                className={`py-3 flex items-center gap-2 border-b-2 transition-all ${
-                  isActive
+                className={`py-3 flex items-center gap-2 border-b-2 transition-all ${isActive
                     ? 'border-indigo-600 text-indigo-600'
                     : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
+                  }`}
               >
                 <Icon className="w-4 h-4" />
                 <span>{tab.label}</span>

@@ -290,3 +290,4 @@ class FinancialExtractor:
                 )
 
         return extracted_total, extracted_tax
+

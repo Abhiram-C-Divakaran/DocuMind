@@ -257,3 +257,4 @@ def execute_tesseract_ocr(
             "total_tokens": len(all_tokens),
         },
     )
+
