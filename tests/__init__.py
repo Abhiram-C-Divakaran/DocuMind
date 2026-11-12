@@ -1,0 +1,2 @@
+# DocuMind test suite
+

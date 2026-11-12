@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "documind-backend"
+version = "0.1.0"
+description = "Multimodal Document Intelligence Platform Backend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.28.0",
+    "pydantic>=2.6.4",
+    "pydantic-settings>=2.2.1",
+    "sqlalchemy>=2.0.28",
+    "alembic>=1.13.1",
+    "asyncpg>=0.29.0",
+    "aiosqlite>=0.20.0",
+    "python-multipart>=0.0.9",
+    "Pillow>=10.2.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = [
+    "../tests",
+    "tests"
+]
+pythonpath = [
+    ".",
+    "backend",
+    ".."
+]
+asyncio_mode = "auto"
+
