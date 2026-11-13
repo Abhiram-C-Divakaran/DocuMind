@@ -31,7 +31,9 @@ except (ImportError, OSError):
 from ml.data.annotation_alignment import ID2LABEL
 from ml.data.prepare_dataset import compute_split_hash, load_aligned_receipts
 from ml.evaluation.metrics import (
+    compute_checkpoint_disk_size_mb,
     compute_document_metrics,
+    compute_latency_summary,
     compute_model_footprint,
     compute_seqeval_metrics,
 )
@@ -80,12 +82,14 @@ def _write_evaluation_outputs(out_dir: Path, results: Dict[str, Any]) -> None:
         return
 
     footprint = results.get("footprint") or {}
+    lat_pct = results.get("latency_percentiles_ms") or {}
+    ckpt_size_mb = results.get("checkpoint_size_mb")
     seqeval_res = results["seqeval"]
     doc_res = results["document_metrics"]
     md_lines.extend(
         [
-            f"- **Model-Only Latency**: {results['latency_ms_per_doc']} ms/doc ({results['throughput_docs_per_sec']} docs/sec)",
-            f"- **Total Parameters**: {footprint.get('total_parameters', 0):,} ({footprint.get('estimated_parameter_size_mb', 0)} MB)",
+            f"- **Model-Only Latency (avg / p50 / p95 / p99)**: {results['latency_ms_per_doc']} ms / {lat_pct.get('p50_ms', 'N/A')} ms / {lat_pct.get('p95_ms', 'N/A')} ms / {lat_pct.get('p99_ms', 'N/A')} ms ({results['throughput_docs_per_sec']} docs/sec)",
+            f"- **Total Parameters**: {footprint.get('total_parameters', 0):,} ({footprint.get('estimated_parameter_size_mb', 0)} MB param footprint; checkpoint on disk: {ckpt_size_mb if ckpt_size_mb is not None else 'N/A'} MB)",
             "",
             "## Entity Extraction Performance (Seqeval strict IOB2)",
             "| Entity | Precision | Recall | F1 Score | Support |",
@@ -97,8 +101,12 @@ def _write_evaluation_outputs(out_dir: Path, results: Dict[str, Any]) -> None:
             f"| **{ent}** | {met['precision']:.4f} | {met['recall']:.4f} | {met['f1']:.4f} | {met['support']} |"
         )
     md_lines.append(
-        f"| **OVERALL** | {seqeval_res['overall_precision']:.4f} | {seqeval_res['overall_recall']:.4f} | {seqeval_res['overall_f1']:.4f} | - |"
+        f"| **OVERALL (Micro)** | {seqeval_res['overall_precision']:.4f} | {seqeval_res['overall_recall']:.4f} | {seqeval_res['overall_f1']:.4f} | - |"
     )
+    if "macro_f1" in seqeval_res:
+        md_lines.append(
+            f"| **MACRO F1 (4 Entities)** | - | - | {seqeval_res['macro_f1']:.4f} | - |"
+        )
 
     md_lines.extend(
         [
@@ -258,13 +266,16 @@ def evaluate_checkpoint(
     seqeval_res = compute_seqeval_metrics(all_preds, all_refs)
     doc_res = compute_document_metrics(decoded_predictions, ground_truth_docs)
     footprint = compute_model_footprint(model)
+    latency_percentiles_ms = compute_latency_summary([lat * 1000.0 for lat in latencies])
+    checkpoint_size_mb = compute_checkpoint_disk_size_mb(checkpoint_path)
 
-    avg_latency_ms = (sum(latencies) / len(latencies)) * 1000.0 if latencies else 0.0
+    avg_latency_ms = latency_percentiles_ms["avg_ms"]
     throughput = 1000.0 / avg_latency_ms if avg_latency_ms > 0 else 0.0
 
     results = {
         "status": "EVALUATED",
         "checkpoint": str(checkpoint_path),
+        "checkpoint_size_mb": checkpoint_size_mb,
         "checkpoint_metadata": ckpt_meta,
         "test_dataset": str(test_path),
         "split_hash": split_hash,
@@ -274,7 +285,8 @@ def evaluate_checkpoint(
         "evaluated_at_utc": datetime.now(timezone.utc).isoformat(),
         "seqeval": seqeval_res,
         "document_metrics": doc_res,
-        "latency_ms_per_doc": round(avg_latency_ms, 2),
+        "latency_ms_per_doc": avg_latency_ms,
+        "latency_percentiles_ms": latency_percentiles_ms,
         "throughput_docs_per_sec": round(throughput, 2),
         "footprint": footprint,
     }

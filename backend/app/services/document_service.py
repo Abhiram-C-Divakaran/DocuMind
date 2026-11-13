@@ -13,6 +13,10 @@ from backend.app.models.extraction import ExtractionMethod, ExtractionResult
 from backend.app.services.storage import storage_service
 from backend.app.services.validator import validate_file
 from ml.extractors import LayoutLMv3Extractor, PlaceholderExtractor, TesseractBaselineExtractor
+from ml.extractors.layoutlmv3_extractor import (
+    get_cached_layoutlmv3_extractor,
+    sanitize_checkpoint_identity,
+)
 
 VALID_EXTRACTION_METHODS = {
     ExtractionMethod.TESSERACT_BASELINE.value,
@@ -30,12 +34,13 @@ def get_extractor(method_name: str):
         )
 
     if method == ExtractionMethod.LAYOUTLMV3.value:
-        extractor = LayoutLMv3Extractor()
+        extractor = get_cached_layoutlmv3_extractor()
         ok, reason = extractor.validate_checkpoint()
         if not ok:
+            ckpt_id = sanitize_checkpoint_identity(extractor.checkpoint_dir)
             raise FileValidationError(
                 f"LayoutLMv3 multimodal extraction is unavailable in Phase 2A / without fine-tuned weights. "
-                f"Model checkpoint is not available at '{extractor.checkpoint_dir}': {reason}. "
+                f"Model checkpoint is not available for '{ckpt_id}': {reason}. "
                 "Please run the training pipeline ('python -m ml.training.train_layoutlmv3') "
                 "to produce valid trained weights before selecting this extractor."
             )

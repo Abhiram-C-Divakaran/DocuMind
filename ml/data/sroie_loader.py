@@ -280,7 +280,7 @@ class SROIELoader:
             "address": "ADDRESS",
             "total": "TOTAL",
         }
-        started_entities = set()
+        prev_canon: Optional[str] = None
 
         for seg in ocr_segments:
             seg_text = str(seg.get("text") or "").strip()
@@ -318,13 +318,16 @@ class SROIELoader:
                 words.append(w)
                 boxes.append(b)
                 if canon:
-                    if canon not in started_entities and idx_w == 0:
+                    # Start a new BIO span on the first word whenever entity type changes
+                    # (including after an intervening 'O' segment) to keep strict IOB2 transitions.
+                    if idx_w == 0 and canon != prev_canon:
                         pre_labels.append(f"B-{canon}")
-                        started_entities.add(canon)
                     else:
                         pre_labels.append(f"I-{canon}")
                 else:
                     pre_labels.append("O")
+
+            prev_canon = canon
 
         if not words:
             self._record_excluded(receipt_id, "empty_ocr_tokens", "HF row yielded 0 words")

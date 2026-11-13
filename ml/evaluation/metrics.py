@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import re
 try:
@@ -42,6 +43,7 @@ def compute_seqeval_metrics(
             "overall_precision": 0.0,
             "overall_recall": 0.0,
             "overall_f1": 0.0,
+            "macro_f1": 0.0,
             "entities": {},
         }
 
@@ -70,10 +72,13 @@ def compute_seqeval_metrics(
                 "support": 0,
             }
 
+    macro_f1 = sum(m["f1"] for m in entity_metrics.values()) / max(1, len(entity_metrics))
+
     return {
         "overall_precision": p,
         "overall_recall": r,
         "overall_f1": f1,
+        "macro_f1": float(macro_f1),
         "entities": entity_metrics,
     }
 
@@ -148,3 +153,25 @@ def compute_model_footprint(model: Any) -> Dict[str, Any]:
         "trainable_parameters": trainable_params,
         "estimated_parameter_size_mb": round(mem_mb, 2),
     }
+
+
+def compute_latency_summary(latencies_ms: List[float]) -> Dict[str, float]:
+    """Computes average, p50, p95, and p99 inference latency in milliseconds."""
+    if not latencies_ms:
+        return {"avg_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0}
+    arr = np.asarray(latencies_ms, dtype=np.float64)
+    return {
+        "avg_ms": round(float(np.mean(arr)), 2),
+        "p50_ms": round(float(np.percentile(arr, 50)), 2),
+        "p95_ms": round(float(np.percentile(arr, 95)), 2),
+        "p99_ms": round(float(np.percentile(arr, 99)), 2),
+    }
+
+
+def compute_checkpoint_disk_size_mb(checkpoint_dir: Any) -> Optional[float]:
+    """Returns total size in MB of all files inside a checkpoint directory, or None if missing."""
+    p = Path(checkpoint_dir)
+    if not p.exists() or not p.is_dir():
+        return None
+    total_bytes = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+    return round(total_bytes / (1024 * 1024), 2)

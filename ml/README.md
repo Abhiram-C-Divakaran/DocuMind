@@ -1,9 +1,10 @@
-# DocuMind ML Subsystem (Phase 3A — SROIE, LayoutLMv3 & Active Learning Feedback)
+# DocuMind ML Subsystem (Phase 3B — SROIE, LayoutLMv3 Training, Tracking & Readiness)
 
-This package contains the machine learning subsystem for DocuMind:
+This package contains the machine learning subsystem for DocuMind (see also [`MODEL_CARD.md`](../MODEL_CARD.md) for architecture, dataset schema, training status, and limitations):
 1. **Phase 2A**: Tesseract OCR and rule-based receipt extraction pipeline (`TesseractBaselineExtractor`).
-2. **Phase 2B/2C**: Reproducible deep learning data ingestion, unified multimodal preprocessing, LayoutLMv3 fine-tuning on real SROIE receipt images, held-out evaluation, comparative benchmarking, and validated FastAPI inference (`LayoutLMv3Extractor`).
+2. **Phase 2B/2C**: Reproducible deep learning data ingestion, unified multimodal preprocessing, LayoutLMv3 fine-tuning on real SROIE receipt images, held-out evaluation, and comparative benchmarking.
 3. **Phase 3A**: Human-in-the-loop validated active-learning feedback export pipeline (`ml/feedback/`) producing audited JSONL datasets exclusively from `APPROVED` reviews without triggering unsafe automatic retraining.
+4. **Phase 3B**: Structured JSON/optional MLflow experiment tracking (`ml/training/experiment_tracker.py`), macro F1 & percentile latency (`p50`/`p95`/`p99`) reporting, process-level model weight caching (`get_cached_layoutlmv3_extractor`), and FastAPI readiness gating (`/api/v1/models/readiness`).
 
 ---
 
@@ -24,7 +25,8 @@ ml/
 ├── training/
 │   ├── config.py                # Hyperparameters dataclass & CUDA/MPS/CPU device detection
 │   ├── dataset.py               # Shared prepare_layoutlmv3_inputs() preprocessing & PyTorch Dataset
-│   ├── train_layoutlmv3.py      # Reproducible fine-tuning (AMP fp16, early stopping, resume, metadata)
+│   ├── experiment_tracker.py    # Structured JSON run tracker & optional MLflow mirroring
+│   ├── train_layoutlmv3.py      # Reproducible fine-tuning (AMP fp16, early stopping, finite loss check)
 │   └── DocuMind_LayoutLMv3_Training.ipynb  # Ready-to-run Google Colab T4 GPU notebook
 ├── evaluation/
 │   ├── metrics.py               # Seqeval strict IOB2 entity F1, document exact match & footprint
@@ -105,24 +107,26 @@ Full dataset preparation and full training refuse to silently fall back to synth
 Open `ml/training/DocuMind_LayoutLMv3_Training.ipynb` in Google Colab (T4 GPU runtime) or run directly from CLI:
 
 ```bash
-# Full GPU fine-tuning on prepared real SROIE data:
+# Full GPU fine-tuning on prepared real SROIE data (default --epochs 3, configurable):
 python -m ml.training.train_layoutlmv3 \
     --data-dir data/sroie_processed \
     --output-dir checkpoints/layoutlmv3-sroie \
     --best-model-dir checkpoints/layoutlmv3-sroie-best \
     --model-name microsoft/layoutlmv3-base \
-    --epochs 8 \
+    --epochs 3 \
     --batch-size 4 \
     --grad-accum 2 \
     --lr 2e-5 \
     --patience 3 \
+    --experiment-dir ml/experiments \
     --seed 42
 ```
 
 Features:
 - Fixed random seeding across Python, NumPy, and PyTorch (`--seed`)
 - CUDA AMP (`fp16`) enabled automatically on CUDA devices (disable with `--no-fp16`)
-- Gradient accumulation, linear warmup decay, gradient clipping, and early stopping
+- Gradient accumulation, linear warmup decay, gradient clipping, finite loss guard, and early stopping
+- Structured run tracking (`ml/experiments/<experiment_id>/experiment_run.json` + optional `--enable-mlflow`)
 - Best checkpoint selection on validation strict BIO F1, saving `checkpoint_metadata.json`, tokenizer/processor configs, and `training_state.pt` (`--resume-from-checkpoint`)
 
 For quick pipeline verification with synthetic rendered PNGs:

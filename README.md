@@ -2,7 +2,7 @@
 
 DocuMind is a production-oriented multimodal document intelligence platform designed to ingest scanned receipts and invoices, validate binary file integrity, perform high-resolution OCR, extract structured tabular and entity data, and maintain an immutable processing ledger.
 
-**Current Release**: **Phase 3A (Human-in-the-Loop Document Review & Active Learning Foundation)**
+**Current Release**: **Phase 3B (LayoutLMv3 Experiment Tracking, Evaluation Percentiles, Model Readiness & UI Gating)** — *Note: see [`MODEL_CARD.md`](MODEL_CARD.md) for current local PyTorch/GPU execution blockers and Google Colab GPU training instructions.*
 
 ---
 
@@ -32,10 +32,10 @@ Doc/
 ├── backend/                  # FastAPI backend service
 │   ├── alembic/              # Database migration definitions (001, 002, 003)
 │   ├── app/
-│   │   ├── api/              # API routes (/health, /api/v1/documents, /api/v1/reviews)
+│   │   ├── api/              # API routes (/health, /api/v1/documents, /api/v1/models, /api/v1/reviews)
 │   │   ├── core/             # Central error handlers and middleware
 │   │   ├── models/           # SQLAlchemy ORM models (Document, ExtractionResult, DocumentReview)
-│   │   ├── schemas/          # Pydantic v2 schemas (extraction, review, financial validation)
+│   │   ├── schemas/          # Pydantic v2 schemas (extraction, models readiness, review)
 │   │   ├── services/         # Document ingestion, review workflow, cryptographic validation, storage
 │   │   ├── config.py         # Pydantic BaseSettings environment loader
 │   │   ├── database.py       # Async SQLAlchemy session and connection engine
@@ -74,7 +74,8 @@ Doc/
 │   └── README.md             # Detailed ML subsystem documentation
 ├── storage/
 │   └── uploads/              # Local storage isolated from web root (safe UUIDs)
-├── tests/                    # Pytest suite (60 unit & integration tests)
+├── tests/                    # Pytest suite (unit & integration tests across Phases 1–3B)
+├── MODEL_CARD.md             # LayoutLMv3 architecture, dataset hygiene & honest status
 ├── docker-compose.yml        # PostgreSQL 16 container definition
 ├── .env.example              # Documented configuration template
 └── README.md
@@ -165,7 +166,7 @@ Invoke-RestMethod -Uri "http://localhost:8000/api/v1/documents" -Method Post -Fo
 
 ## Running the Automated Test Suite
 
-Run the full automated pytest suite (60 tests covering upload validation, OCR logic, SROIE data & LayoutLMv3 evaluation safeguards, HITL review workflows, controlled preview security, and active-learning feedback export):
+Run the full automated pytest suite covering upload validation, OCR logic, SROIE data & LayoutLMv3 evaluation safeguards, HITL review workflows, controlled preview security, active-learning feedback export, experiment tracking, and `/api/v1/models/readiness`:
 
 ```bash
 python -m pytest -v tests
@@ -205,8 +206,9 @@ python -m ml.feedback.export_annotations \
 
 ---
 
-## Phase 3B Roadmap: Verified Retraining & Edge Inference
+## Phase 3B Status: Training Infrastructure, Model Readiness & Deployment Gating
 
-1. **Human-Reviewed Bio Token Verification & Fine-Tuning**: Promote `ALIGNED_CONFIDENT` (and manually verified `NEEDS_MANUAL_ANNOTATION`) JSONL records into scheduled LayoutLMv3 fine-tuning experiments tracked against held-out SROIE baselines.
-2. **Authentication & Multi-Reviewer RBAC**: Replace `local-anonymous` attribution with authenticated reviewer identities and tenant isolation.
-3. **ONNX Runtime / Multi-Page Itemization**: Quantize LayoutLMv3 for fast CPU inference and structured line-item relation extraction.
+1. **Experiment Tracking (`ml/training/experiment_tracker.py`)**: Records `experiment_id`, dataset split hashes, hyperparameters, hardware/dependency metadata, per-epoch loss/entity F1, and best checkpoint paths (with optional MLflow mirroring).
+2. **Evaluation & Benchmarking Upgrades**: `evaluate.py` and `compare_models.py` now compute 4-entity macro F1, `p50`/`p95`/`p99` inference latency percentiles, checkpoint disk footprint (`MB`), and bidirectional error analysis while refusing to fabricate metrics when weights or runtime are unavailable (`NOT_EVALUATED`).
+3. **Model Caching & Readiness API (`GET /api/v1/models/readiness`)**: Caches loaded LayoutLMv3 weights by `(resolved_checkpoint_dir, device)` in FastAPI and exposes sanitized readiness status to gate `DocumentUploader.tsx` and `MlArchitectureView.tsx` (defaulting safely to `TESSERACT_BASELINE`).
+4. **Next Execution Step (Cloud GPU)**: Run [`ml/training/DocuMind_LayoutLMv3_Training.ipynb`](ml/training/DocuMind_LayoutLMv3_Training.ipynb) on Google Colab T4 GPU to generate real fine-tuned weights (`checkpoints/layoutlmv3-sroie-best`) and held-out SROIE benchmark results (local Windows PyTorch/Pandas/PyArrow execution is blocked by Windows App Control `WinError 4551`).

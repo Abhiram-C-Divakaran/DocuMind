@@ -27,7 +27,11 @@ except (ImportError, OSError):
 
 from ml.data.annotation_alignment import AlignedReceipt
 from ml.data.prepare_dataset import compute_split_hash, load_aligned_receipts
-from ml.evaluation.metrics import normalize_entity_value
+from ml.evaluation.metrics import (
+    compute_checkpoint_disk_size_mb,
+    compute_latency_summary,
+    normalize_entity_value,
+)
 from ml.extraction.pipeline import ReceiptExtractionPipeline
 from ml.extractors.layoutlmv3_extractor import (
     parse_extracted_amount,
@@ -254,6 +258,8 @@ def _build_not_evaluated_summary(reason: str) -> Dict[str, Any]:
         "model_inference_latency_ms": None,
         "total_pipeline_latency_ms": None,
         "avg_latency_ms": None,
+        "latency_percentiles_ms": None,
+        "checkpoint_size_mb": None,
     }
 
 
@@ -445,6 +451,7 @@ def compare_models(
                     }
                 )
 
+    baseline_lat_summary = compute_latency_summary(baseline_total_lats)
     baseline_summary = {
         "status": "EVALUATED",
         "evaluation_mode": baseline_mode,
@@ -454,11 +461,16 @@ def compare_models(
         "document_exact_match": round(baseline_doc_exact / n, 4),
         "ocr_latency_ms": round(sum(baseline_ocr_lats) / n, 2),
         "rule_parse_latency_ms": round(sum(baseline_parse_lats) / n, 2),
-        "total_pipeline_latency_ms": round(sum(baseline_total_lats) / n, 2),
-        "avg_latency_ms": round(sum(baseline_total_lats) / n, 2),
+        "total_pipeline_latency_ms": baseline_lat_summary["avg_ms"],
+        "avg_latency_ms": baseline_lat_summary["avg_ms"],
+        "latency_percentiles_ms": baseline_lat_summary,
     }
 
+    ckpt_size_mb = compute_checkpoint_disk_size_mb(checkpoint_path)
+
     if layoutlm_evaluated:
+        lm_pipeline_lat = compute_latency_summary(layoutlm_total_lats)
+        lm_model_lat = compute_latency_summary(layoutlm_infer_lats)
         layoutlm_summary = {
             "status": "EVALUATED",
             "evaluation_mode": (
@@ -472,13 +484,17 @@ def compare_models(
             "document_exact_match": round(layoutlm_doc_exact / n, 4),
             "ocr_latency_ms": round(sum(layoutlm_ocr_lats) / n, 2),
             "feature_prep_latency_ms": round(sum(layoutlm_prep_lats) / n, 2),
-            "model_inference_latency_ms": round(sum(layoutlm_infer_lats) / n, 2),
-            "total_pipeline_latency_ms": round(sum(layoutlm_total_lats) / n, 2),
-            "avg_latency_ms": round(sum(layoutlm_total_lats) / n, 2),
+            "model_inference_latency_ms": lm_model_lat["avg_ms"],
+            "model_latency_percentiles_ms": lm_model_lat,
+            "total_pipeline_latency_ms": lm_pipeline_lat["avg_ms"],
+            "avg_latency_ms": lm_pipeline_lat["avg_ms"],
+            "latency_percentiles_ms": lm_pipeline_lat,
+            "checkpoint_size_mb": ckpt_size_mb,
         }
         comparison_status = "COMPLETE"
     else:
         layoutlm_summary = _build_not_evaluated_summary(layoutlm_unavailable_reason)
+        layoutlm_summary["checkpoint_size_mb"] = ckpt_size_mb
         comparison_status = "INCOMPLETE_MISSING_LAYOUTLMV3"
 
     comparison_res: Dict[str, Any] = {
@@ -560,17 +576,33 @@ def compare_models(
         )
 
     b_lat = baseline_summary["total_pipeline_latency_ms"]
+    b_pct = baseline_summary.get("latency_percentiles_ms") or {}
     l_lat = layoutlm_summary["total_pipeline_latency_ms"]
+    l_pct = layoutlm_summary.get("latency_percentiles_ms") or {}
     if l_lat is None:
-        md_lines.append(f"| **Total Pipeline Latency** | {b_lat:.2f} ms | `NOT_EVALUATED` | N/A |")
+        md_lines.append(
+            f"| **Total Pipeline Latency (avg / p95)** | {b_lat:.2f} ms (p95: {b_pct.get('p95_ms', b_lat):.2f} ms) | `NOT_EVALUATED` | N/A |"
+        )
     else:
         md_lines.append(
-            f"| **Total Pipeline Latency** | {b_lat:.2f} ms | {l_lat:.2f} ms (model-only: {layoutlm_summary['model_inference_latency_ms']:.2f} ms) | {l_lat - b_lat:+.2f} ms |"
+            f"| **Total Pipeline Latency (avg / p95)** | {b_lat:.2f} ms (p95: {b_pct.get('p95_ms', b_lat):.2f} ms) | {l_lat:.2f} ms (p95: {l_pct.get('p95_ms', l_lat):.2f} ms; model-only: {layoutlm_summary['model_inference_latency_ms']:.2f} ms) | {l_lat - b_lat:+.2f} ms |"
         )
+
+    md_lines.append(
+        f"| **Checkpoint Disk Size** | Rules (~0 MB) | {f'{ckpt_size_mb:.2f} MB' if ckpt_size_mb is not None else 'N/A'} | - |"
+    )
 
     if layoutlm_better_cases:
         md_lines.extend(["", "## Qualitative Inspection: LayoutLMv3 Advantages"])
         for case in layoutlm_better_cases[:3]:
+            md_lines.append(f"### Receipt `{case['receipt_id']}`")
+            md_lines.append(f"- **Ground Truth**: `{case['ground_truth']}`")
+            md_lines.append(f"- **Baseline Pred**: `{case['baseline_pred']}`")
+            md_lines.append(f"- **LayoutLMv3 Pred**: `{case['layoutlm_pred']}`")
+
+    if baseline_better_cases:
+        md_lines.extend(["", "## Qualitative Error Analysis: Baseline Advantages / LayoutLMv3 Misses"])
+        for case in baseline_better_cases[:3]:
             md_lines.append(f"### Receipt `{case['receipt_id']}`")
             md_lines.append(f"- **Ground Truth**: `{case['ground_truth']}`")
             md_lines.append(f"- **Baseline Pred**: `{case['baseline_pred']}`")

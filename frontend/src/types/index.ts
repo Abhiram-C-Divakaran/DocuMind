@@ -215,3 +215,32 @@ export interface PreviewMeta {
   max_preview_pages: number;
   preview_url: string;
 }
+
+export interface ExtractionMethodReadiness {
+  method: string;
+  label: string;
+  available: boolean;
+  is_default: boolean;
+  is_production_ready: boolean;
+  badge: string;
+  description: string;
+  unavailable_reason?: string | null;
+  checkpoint_identity?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface ModelReadinessResponse {
+  default_method: string;
+  ml_inference_enabled: boolean;
+  torch_runtime_available: boolean;
+  tesseract_available: boolean;
+  tesseract_version?: string | null;
+  tesseract_message?: string | null;
+  layoutlmv3_ready: boolean;
+  layoutlmv3_is_production_ready: boolean;
+  layoutlmv3_reason?: string | null;
+  checkpoint_identity?: string | null;
+  checkpoint_size_mb?: number | null;
+  checkpoint_metadata?: Record<string, unknown> | null;
+  methods: ExtractionMethodReadiness[];
+}

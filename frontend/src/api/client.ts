@@ -5,6 +5,7 @@ import {
   DocumentReview,
   DocumentUploadResponse,
   HealthStatus,
+  ModelReadinessResponse,
   PreviewMeta,
   ReviewCorrectionPayload,
   ReviewHistoryResponse,
@@ -62,6 +63,11 @@ class ApiClient {
   async checkHealth(): Promise<HealthStatus> {
     const res = await fetch(`${API_BASE}/health`);
     return this.handleResponse<HealthStatus>(res);
+  }
+
+  async fetchModelReadiness(): Promise<ModelReadinessResponse> {
+    const res = await fetch(`${API_BASE}/api/v1/models/readiness`);
+    return this.handleResponse<ModelReadinessResponse>(res);
   }
 
   async fetchDocuments(params?: {

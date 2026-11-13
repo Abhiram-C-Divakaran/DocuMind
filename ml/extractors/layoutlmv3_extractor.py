@@ -1,5 +1,6 @@
 import json
 import re
+import threading
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -29,10 +30,92 @@ from backend.app.config import settings
 from backend.app.logger import logger
 from ml.base import BaseExtractor, ExtractionOutput
 from ml.data.annotation_alignment import ID2LABEL, LABEL_LIST
+from ml.evaluation.metrics import compute_checkpoint_disk_size_mb
 from ml.inference.decoder import decode_layoutlmv3_predictions
 from ml.ocr.engine import execute_tesseract_ocr, get_tesseract_status
 from ml.training.config import detect_default_device
 from ml.training.dataset import prepare_layoutlmv3_inputs
+
+_CACHE_LOCK = threading.Lock()
+# Cache keyed by (resolved_checkpoint_dir, device) -> (tokenizer, image_processor, model)
+_WEIGHTS_CACHE: Dict[Tuple[str, str], Tuple[Any, Any, Any]] = {}
+_EXTRACTOR_CACHE: Dict[Tuple[str, str], "LayoutLMv3Extractor"] = {}
+
+
+def sanitize_checkpoint_identity(checkpoint_dir: Union[str, Path]) -> str:
+    """Returns a non-sensitive checkpoint identifier without exposing absolute host directories."""
+    raw = str(checkpoint_dir).strip()
+    p = Path(raw)
+    if p.is_absolute():
+        return p.name or "layoutlmv3-checkpoint"
+    return raw.replace("\\", "/") or "layoutlmv3-checkpoint"
+
+
+def clear_layoutlmv3_cache() -> None:
+    """Clears cached LayoutLMv3 weights and extractor instances (e.g. for tests/reloads)."""
+    with _CACHE_LOCK:
+        _WEIGHTS_CACHE.clear()
+        _EXTRACTOR_CACHE.clear()
+
+
+def _sanitize_error_reason(reason: str, checkpoint_dir: Union[str, Path]) -> str:
+    """Strips full filesystem prefix from validation messages for safe API responses."""
+    raw_str = str(checkpoint_dir)
+    norm_str = str(Path(raw_str))
+    safe_id = sanitize_checkpoint_identity(checkpoint_dir)
+    cleaned = reason.replace(raw_str, safe_id).replace(norm_str, safe_id)
+    try:
+        resolved = str(Path(checkpoint_dir).resolve())
+        cleaned = cleaned.replace(resolved, safe_id)
+    except Exception:
+        pass
+    return cleaned
+
+
+def read_sanitized_checkpoint_metadata(checkpoint_dir: Union[str, Path]) -> Optional[Dict[str, Any]]:
+    """Reads safe scalar lineage fields from checkpoint_metadata.json if present."""
+    meta_path = Path(checkpoint_dir) / "checkpoint_metadata.json"
+    if not meta_path.exists() or not meta_path.is_file():
+        return None
+    try:
+        with open(meta_path, "r", encoding="utf-8") as mf:
+            raw = json.load(mf)
+        if not isinstance(raw, dict):
+            return None
+        safe_keys = (
+            "experiment_id",
+            "base_model",
+            "seed",
+            "epoch",
+            "global_step",
+            "best_val_f1",
+            "is_synthetic",
+            "smoke_test",
+            "dataset_source",
+            "saved_at_utc",
+        )
+        return {k: raw[k] for k in safe_keys if k in raw}
+    except Exception:
+        return None
+
+
+def get_cached_layoutlmv3_extractor(
+    checkpoint_dir: Optional[str] = None,
+    device: Optional[str] = None,
+) -> "LayoutLMv3Extractor":
+    """Returns a process-cached LayoutLMv3Extractor keyed by resolved checkpoint dir & device."""
+    target_dir = checkpoint_dir or getattr(
+        settings, "LAYOUTLMV3_CHECKPOINT_DIR", "checkpoints/layoutlmv3-sroie-best"
+    )
+    resolved_dir = str(Path(target_dir).resolve())
+    resolved_dev = device or detect_default_device()
+    key = (resolved_dir, resolved_dev)
+    with _CACHE_LOCK:
+        cached = _EXTRACTOR_CACHE.get(key)
+        if cached is None or str(Path(cached.checkpoint_dir).resolve()) != resolved_dir:
+            cached = LayoutLMv3Extractor(checkpoint_dir=target_dir, device=resolved_dev)
+            _EXTRACTOR_CACHE[key] = cached
+        return cached
 
 
 def validate_checkpoint_directory(checkpoint_dir: Union[str, Path]) -> Tuple[bool, str]:
@@ -167,12 +250,38 @@ class LayoutLMv3Extractor(BaseExtractor):
         return "LAYOUTLMV3"
 
     def validate_checkpoint(self) -> Tuple[bool, str]:
+        if not getattr(settings, "ENABLE_ML_INFERENCE", True):
+            return False, "ML inference is disabled via configuration (ENABLE_ML_INFERENCE=false)."
+        valid_files, reason = validate_checkpoint_directory(self.checkpoint_dir)
+        if not valid_files:
+            return False, reason
         if not HAS_TORCH or torch is None:
-            valid_files, reason = validate_checkpoint_directory(self.checkpoint_dir)
-            if not valid_files:
-                return False, reason
-            return False, "PyTorch/Transformers runtime unavailable on this host."
-        return validate_checkpoint_directory(self.checkpoint_dir)
+            return False, "PyTorch/Transformers runtime is unavailable on this host."
+        return True, reason
+
+    def get_readiness_info(self) -> Dict[str, Any]:
+        """Returns sanitized readiness metadata suitable for API readiness checks."""
+        ml_enabled = bool(getattr(settings, "ENABLE_ML_INFERENCE", True))
+        valid_files, raw_reason = validate_checkpoint_directory(self.checkpoint_dir)
+        ckpt_identity = sanitize_checkpoint_identity(self.checkpoint_dir)
+        metadata = read_sanitized_checkpoint_metadata(self.checkpoint_dir)
+        ckpt_size_mb = compute_checkpoint_disk_size_mb(self.checkpoint_dir)
+
+        ready, full_reason = self.validate_checkpoint()
+        safe_reason = None if ready else _sanitize_error_reason(full_reason, self.checkpoint_dir)
+        is_synthetic = bool((metadata or {}).get("is_synthetic", False))
+
+        return {
+            "ready": bool(ready),
+            "valid_files": bool(valid_files),
+            "runtime_available": bool(HAS_TORCH and torch is not None),
+            "inference_enabled": ml_enabled,
+            "is_production_ready": bool(ready and not is_synthetic),
+            "reason": safe_reason,
+            "checkpoint_identity": ckpt_identity,
+            "checkpoint_size_mb": ckpt_size_mb,
+            "metadata": metadata,
+        }
 
     def is_checkpoint_available(self) -> bool:
         """Checks if runtime is ready and a structurally valid checkpoint directory exists."""
@@ -180,7 +289,9 @@ class LayoutLMv3Extractor(BaseExtractor):
         return ok
 
     def load_model(self) -> None:
-        """Loads validated model, tokenizer, and image processor if not already loaded."""
+        """Loads validated model, tokenizer, and image processor, reusing process cache when available."""
+        if not getattr(settings, "ENABLE_ML_INFERENCE", True):
+            raise RuntimeError("ML inference is disabled via ENABLE_ML_INFERENCE=false.")
         if not HAS_TORCH or torch is None:
             raise RuntimeError("PyTorch/Transformers runtime is unavailable.")
 
@@ -188,26 +299,43 @@ class LayoutLMv3Extractor(BaseExtractor):
         if not valid:
             raise RuntimeError(f"Invalid LayoutLMv3 checkpoint: {reason}")
 
+        resolved_dir = str(Path(self.checkpoint_dir).resolve())
+        cache_key = (resolved_dir, self._device)
+
+        with _CACHE_LOCK:
+            if cache_key in _WEIGHTS_CACHE:
+                tok, img_proc, mdl = _WEIGHTS_CACHE[cache_key]
+                self._tokenizer = tok
+                self._image_processor = img_proc
+                self._model = mdl
+                return
+
         if self._model is None or self._tokenizer is None:
-            logger.info("Loading LayoutLMv3 model from %s onto %s", self.checkpoint_dir, self._device)
+            logger.info("Loading LayoutLMv3 model from %s onto %s", resolved_dir, self._device)
             try:
                 processor = AutoProcessor.from_pretrained(self.checkpoint_dir, apply_ocr=False)
-                self._tokenizer = processor.tokenizer
-                self._image_processor = getattr(processor, "image_processor", None)
+                tok = processor.tokenizer
+                img_proc = getattr(processor, "image_processor", None)
             except Exception:
-                self._tokenizer = AutoTokenizer.from_pretrained(
+                tok = AutoTokenizer.from_pretrained(
                     self.checkpoint_dir, add_prefix_space=True
                 )
                 try:
-                    self._image_processor = AutoImageProcessor.from_pretrained(
+                    img_proc = AutoImageProcessor.from_pretrained(
                         self.checkpoint_dir, apply_ocr=False
                     )
                 except Exception:
-                    self._image_processor = None
+                    img_proc = None
 
-            self._model = LayoutLMv3ForTokenClassification.from_pretrained(self.checkpoint_dir)
-            self._model.to(self._device)
-            self._model.eval()
+            mdl = LayoutLMv3ForTokenClassification.from_pretrained(self.checkpoint_dir)
+            mdl.to(self._device)
+            mdl.eval()
+
+            self._tokenizer = tok
+            self._image_processor = img_proc
+            self._model = mdl
+            with _CACHE_LOCK:
+                _WEIGHTS_CACHE[cache_key] = (tok, img_proc, mdl)
 
     def _load_document_image(self, file_path: Path) -> Image.Image:
         if file_path.suffix.lower() == ".pdf":

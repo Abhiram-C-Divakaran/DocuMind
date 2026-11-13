@@ -1,13 +1,14 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   UploadCloud,
   AlertCircle,
   X,
   FileCheck,
   ShieldCheck,
+  Info,
 } from 'lucide-react';
 import { apiClient } from '../../api/client';
-import { DocumentUploadResponse } from '../../types';
+import { DocumentUploadResponse, ModelReadinessResponse } from '../../types';
 
 interface DocumentUploaderProps {
   onUploadSuccess: (response: DocumentUploadResponse) => void;
@@ -25,6 +26,26 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [validationWarning, setValidationWarning] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<ModelReadinessResponse | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    apiClient
+      .fetchModelReadiness()
+      .then((res) => {
+        if (!active) return;
+        setReadiness(res);
+        setReadinessError(null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setReadinessError('Unable to verify LayoutLMv3 checkpoint readiness; defaulting to Tesseract OCR + Rules.');
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -199,9 +220,9 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
               {[
                 {
                   id: 'TESSERACT_BASELINE',
-                  label: 'Tesseract OCR',
-                  badge: 'Phase 2A Active',
-                  desc: 'Real OCR + rule-based receipt extraction',
+                  label: 'Tesseract OCR + Rules',
+                  badge: 'Default Active',
+                  desc: 'Real OCR + deterministic receipt extraction',
                   disabled: false,
                 },
                 {
@@ -213,31 +234,44 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
                 },
                 {
                   id: 'LAYOUTLMV3',
-                  label: 'LayoutLMv3',
-                  badge: 'Multimodal ML',
-                  desc: 'Fine-tuned transformer (requires checkpoint)',
-                  disabled: false,
+                  label: 'LayoutLMv3 Transformer',
+                  badge: readiness?.layoutlmv3_ready
+                    ? readiness.layoutlmv3_is_production_ready
+                      ? 'Checkpoint Ready'
+                      : 'Synthetic Test Only'
+                    : 'Unavailable',
+                  desc: readiness?.layoutlmv3_ready
+                    ? `Fine-tuned checkpoint (${readiness.checkpoint_identity ?? 'verified'})`
+                    : readiness?.layoutlmv3_reason ??
+                      readinessError ??
+                      'Requires verified trained checkpoint and PyTorch runtime',
+                  disabled: !(readiness?.layoutlmv3_ready ?? false),
                 },
               ].map((opt) => (
                 <button
                   key={opt.id}
                   type="button"
                   disabled={isUploading || opt.disabled}
+                  title={opt.disabled ? opt.desc : undefined}
                   onClick={() => !opt.disabled && setExtractionMethod(opt.id)}
                   className={`p-3 text-left rounded-lg border text-xs transition-all ${
                     opt.disabled
-                      ? 'border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed'
+                      ? 'border-slate-200 bg-slate-50 opacity-65 cursor-not-allowed'
                       : extractionMethod === opt.id
                       ? 'border-indigo-600 bg-indigo-50/80 shadow-2xs'
                       : 'border-slate-200 hover:border-slate-300 bg-white'
                   }`}
                 >
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center justify-between gap-1 mb-1">
                     <span className="font-semibold text-slate-800">{opt.label}</span>
                     <span
-                      className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                      className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${
                         opt.id === 'TESSERACT_BASELINE'
                           ? 'bg-emerald-100 text-emerald-800'
+                          : opt.id === 'LAYOUTLMV3' && readiness?.layoutlmv3_ready
+                          ? readiness.layoutlmv3_is_production_ready
+                            ? 'bg-indigo-100 text-indigo-800'
+                            : 'bg-amber-100 text-amber-800'
                           : 'bg-slate-100 text-slate-600'
                       }`}
                     >
@@ -248,6 +282,16 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
                 </button>
               ))}
             </div>
+
+            {readiness && !readiness.layoutlmv3_ready && (
+              <div className="mt-2.5 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-600 text-[11px] flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                <span>
+                  <strong className="text-slate-700">LayoutLMv3 disabled:</strong>{' '}
+                  {readiness.layoutlmv3_reason || 'No valid trained checkpoint is currently loaded.'}
+                </span>
+              </div>
+            )}
 
             <label className="mt-3 flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
               <input

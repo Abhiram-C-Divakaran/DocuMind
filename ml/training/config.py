@@ -40,7 +40,7 @@ class LayoutLMv3TrainingConfig:
     weight_decay: float = 0.01
     adam_epsilon: float = 1e-8
     max_grad_norm: float = 1.0
-    num_epochs: int = 5
+    num_epochs: int = 3
     warmup_ratio: float = 0.1
     gradient_accumulation_steps: int = 4
     early_stopping_patience: int = 3
@@ -54,6 +54,8 @@ class LayoutLMv3TrainingConfig:
     eval_steps: int = 50
     save_total_limit: int = 2
     resume_from_checkpoint: Optional[str] = None
+    experiment_dir: str = "ml/experiments"
+    enable_mlflow: bool = False
 
     smoke_test: bool = False
     max_smoke_samples: int = 4

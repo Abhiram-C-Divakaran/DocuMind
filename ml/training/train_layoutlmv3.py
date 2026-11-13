@@ -43,6 +43,7 @@ from ml.data.prepare_dataset import (
 from ml.evaluation.metrics import compute_seqeval_metrics
 from ml.training.config import LayoutLMv3TrainingConfig
 from ml.training.dataset import SROIELayoutLMv3Dataset, collate_fn
+from ml.training.experiment_tracker import ExperimentTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -334,27 +335,75 @@ def train_layoutlmv3(config: LayoutLMv3TrainingConfig) -> Dict[str, Any]:
     best_dir = Path(config.best_model_dir)
     history: List[Dict[str, Any]] = []
     num_epochs = 1 if config.smoke_test else config.num_epochs
+    best_epoch = 0
 
     split_hashes = manifest.get("split_hashes") or {
         "train": compute_split_hash(train_receipts),
         "validation": compute_split_hash(val_receipts),
     }
 
+    tracker = ExperimentTracker(
+        experiment_dir=config.experiment_dir,
+        enable_mlflow=config.enable_mlflow,
+    )
+    experiment_id = tracker.start_run(
+        model_architecture=config.model_name_or_path,
+        label_list=LABEL_LIST,
+        hyperparameters={
+            "learning_rate": config.learning_rate,
+            "batch_size": config.batch_size,
+            "eval_batch_size": config.eval_batch_size,
+            "gradient_accumulation_steps": config.gradient_accumulation_steps,
+            "effective_batch_size": config.batch_size * max(1, config.gradient_accumulation_steps),
+            "num_epochs": num_epochs,
+            "warmup_ratio": config.warmup_ratio,
+            "weight_decay": config.weight_decay,
+            "max_grad_norm": config.max_grad_norm,
+            "early_stopping_patience": config.early_stopping_patience,
+            "fp16_amp": use_amp,
+            "smoke_test": config.smoke_test,
+        },
+        dataset_info={
+            "source": manifest.get("source", "local_or_processed"),
+            "is_synthetic": bool(config.smoke_test or manifest.get("is_synthetic", False)),
+            "train_samples": len(train_receipts),
+            "validation_samples": len(val_receipts),
+            "split_hashes": split_hashes,
+        },
+        seed=config.seed,
+        resolved_device=str(config.device),
+    )
+
     last_val_metrics: Dict[str, Any] = {}
-    for epoch in range(start_epoch, num_epochs):
-        model.train()
-        running_loss = 0.0
-        optimizer.zero_grad()
+    try:
+        for epoch in range(start_epoch, num_epochs):
+            model.train()
+            running_loss = 0.0
+            optimizer.zero_grad()
 
-        for step, batch in enumerate(train_loader):
-            input_ids = batch["input_ids"].to(config.device)
-            attention_mask = batch["attention_mask"].to(config.device)
-            bbox = batch["bbox"].to(config.device)
-            pixel_values = batch["pixel_values"].to(config.device)
-            labels = batch["labels"].to(config.device)
+            for step, batch in enumerate(train_loader):
+                input_ids = batch["input_ids"].to(config.device)
+                attention_mask = batch["attention_mask"].to(config.device)
+                bbox = batch["bbox"].to(config.device)
+                pixel_values = batch["pixel_values"].to(config.device)
+                labels = batch["labels"].to(config.device)
 
-            if use_amp and hasattr(torch, "amp"):
-                with torch.amp.autocast("cuda", enabled=True):
+                if use_amp and hasattr(torch, "amp"):
+                    with torch.amp.autocast("cuda", enabled=True):
+                        outputs = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            bbox=bbox,
+                            pixel_values=pixel_values,
+                            labels=labels,
+                        )
+                        if not torch.isfinite(outputs.loss):
+                            raise FloatingPointError(
+                                f"Non-finite training loss encountered at epoch={epoch + 1}, step={step + 1}"
+                            )
+                        loss = outputs.loss / max(1, config.gradient_accumulation_steps)
+                    scaler.scale(loss).backward()
+                else:
                     outputs = model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -362,114 +411,135 @@ def train_layoutlmv3(config: LayoutLMv3TrainingConfig) -> Dict[str, Any]:
                         pixel_values=pixel_values,
                         labels=labels,
                     )
+                    if not torch.isfinite(outputs.loss):
+                        raise FloatingPointError(
+                            f"Non-finite training loss encountered at epoch={epoch + 1}, step={step + 1}"
+                        )
                     loss = outputs.loss / max(1, config.gradient_accumulation_steps)
-                scaler.scale(loss).backward()
-            else:
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    bbox=bbox,
-                    pixel_values=pixel_values,
-                    labels=labels,
-                )
-                loss = outputs.loss / max(1, config.gradient_accumulation_steps)
-                loss.backward()
+                    loss.backward()
 
-            running_loss += float(loss.item() * max(1, config.gradient_accumulation_steps))
+                running_loss += float(loss.item() * max(1, config.gradient_accumulation_steps))
 
-            is_accum_boundary = (step + 1) % max(1, config.gradient_accumulation_steps) == 0
-            is_last_batch = (step + 1) == len(train_loader)
-            if is_accum_boundary or is_last_batch:
-                if use_amp and scaler is not None:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-                    optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-                global_step += 1
+                is_accum_boundary = (step + 1) % max(1, config.gradient_accumulation_steps) == 0
+                is_last_batch = (step + 1) == len(train_loader)
+                if is_accum_boundary or is_last_batch:
+                    if use_amp and scaler is not None:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                        optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    global_step += 1
 
-                if config.smoke_test and global_step >= config.smoke_test_steps:
-                    break
+                    if config.smoke_test and global_step >= config.smoke_test_steps:
+                        break
 
-        avg_train_loss = running_loss / max(1, step + 1)
-        val_loss, val_metrics = evaluate_model(model, val_loader, config.device)
-        last_val_metrics = val_metrics
-        val_f1 = float(val_metrics.get("overall_f1", 0.0))
+            avg_train_loss = running_loss / max(1, step + 1)
+            val_loss, val_metrics = evaluate_model(model, val_loader, config.device)
+            last_val_metrics = val_metrics
+            val_f1 = float(val_metrics.get("overall_f1", 0.0))
 
-        epoch_record = {
-            "epoch": epoch + 1,
-            "global_step": global_step,
-            "train_loss": round(avg_train_loss, 4),
-            "val_loss": round(val_loss, 4),
-            "val_f1": round(val_f1, 4),
-            "val_metrics": val_metrics,
-        }
-        history.append(epoch_record)
-        logger.info(
-            "Epoch %d/%d | train_loss=%.4f | val_loss=%.4f | val_f1=%.4f",
-            epoch + 1,
-            num_epochs,
-            avg_train_loss,
-            val_loss,
-            val_f1,
-        )
-
-        common_meta = {
-            "base_model": config.model_name_or_path,
-            "label_list": LABEL_LIST,
-            "seed": config.seed,
-            "epoch": epoch + 1,
-            "global_step": global_step,
-            "device": str(config.device),
-            "fp16_amp": use_amp,
-            "is_synthetic": bool(config.smoke_test or manifest.get("is_synthetic", False)),
-            "smoke_test": config.smoke_test,
-            "dataset_source": manifest.get("source", "local_or_processed"),
-            "split_hashes": split_hashes,
-            "val_metrics": val_metrics,
-            "saved_at_utc": datetime.now(timezone.utc).isoformat(),
-        }
-
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
-            epochs_without_improvement = 0
-            best_meta = {**common_meta, "best_val_f1": round(best_val_f1, 4), "epochs_without_improvement": 0}
-            _save_checkpoint(
-                best_dir, model, tokenizer, image_processor, best_meta, optimizer, scheduler, scaler
-            )
-            logger.info("Saved new best checkpoint to %s (val_f1=%.4f)", best_dir, best_val_f1)
-        else:
-            epochs_without_improvement += 1
-
-        last_meta = {
-            **common_meta,
-            "best_val_f1": round(best_val_f1, 4),
-            "epochs_without_improvement": epochs_without_improvement,
-        }
-        _save_checkpoint(
-            output_dir / "last", model, tokenizer, image_processor, last_meta, optimizer, scheduler, scaler
-        )
-
-        if not config.smoke_test and epochs_without_improvement >= config.early_stopping_patience:
+            epoch_record = {
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "train_loss": round(avg_train_loss, 4),
+                "val_loss": round(val_loss, 4),
+                "val_f1": round(val_f1, 4),
+                "val_metrics": val_metrics,
+            }
+            history.append(epoch_record)
+            tracker.log_epoch(epoch_record)
             logger.info(
-                "Early stopping triggered after %d epochs without val F1 improvement.",
-                epochs_without_improvement,
+                "Epoch %d/%d | train_loss=%.4f | val_loss=%.4f | val_f1=%.4f | macro_f1=%.4f",
+                epoch + 1,
+                num_epochs,
+                avg_train_loss,
+                val_loss,
+                val_f1,
+                float(val_metrics.get("macro_f1", 0.0)),
             )
-            break
+
+            common_meta = {
+                "experiment_id": experiment_id,
+                "base_model": config.model_name_or_path,
+                "label_list": LABEL_LIST,
+                "seed": config.seed,
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "device": str(config.device),
+                "fp16_amp": use_amp,
+                "is_synthetic": bool(config.smoke_test or manifest.get("is_synthetic", False)),
+                "smoke_test": config.smoke_test,
+                "dataset_source": manifest.get("source", "local_or_processed"),
+                "split_hashes": split_hashes,
+                "val_metrics": val_metrics,
+                "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                best_epoch = epoch + 1
+                epochs_without_improvement = 0
+                best_meta = {**common_meta, "best_val_f1": round(best_val_f1, 4), "epochs_without_improvement": 0}
+                _save_checkpoint(
+                    best_dir, model, tokenizer, image_processor, best_meta, optimizer, scheduler, scaler
+                )
+                logger.info("Saved new best checkpoint to %s (val_f1=%.4f)", best_dir, best_val_f1)
+            else:
+                epochs_without_improvement += 1
+
+            last_meta = {
+                **common_meta,
+                "best_val_f1": round(best_val_f1, 4),
+                "epochs_without_improvement": epochs_without_improvement,
+            }
+            _save_checkpoint(
+                output_dir / "last", model, tokenizer, image_processor, last_meta, optimizer, scheduler, scaler
+            )
+
+            if not config.smoke_test and epochs_without_improvement >= config.early_stopping_patience:
+                logger.info(
+                    "Early stopping triggered after %d epochs without val F1 improvement.",
+                    epochs_without_improvement,
+                )
+                break
+    except Exception as exc:
+        tracker.finish_run(
+            status="FAILED",
+            extra={"error": str(exc), "epochs_completed": len(history), "global_step": global_step},
+        )
+        raise
 
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_dir / "training_history.json", "w", encoding="utf-8") as hf:
         json.dump(history, hf, indent=2)
 
+    exp_run_file = tracker.finish_run(
+        status="COMPLETED",
+        best_checkpoint={
+            "path": str(best_dir),
+            "best_val_f1": round(max(0.0, best_val_f1), 4),
+            "best_epoch": best_epoch,
+        },
+        extra={
+            "epochs_completed": len(history),
+            "global_step": global_step,
+            "last_val_metrics": last_val_metrics,
+        },
+    )
+
     return {
         "status": "completed",
+        "experiment_id": experiment_id,
+        "experiment_run_file": str(exp_run_file),
         "smoke_test": config.smoke_test,
         "best_model_dir": str(best_dir),
         "best_val_f1": round(max(0.0, best_val_f1), 4),
+        "best_epoch": best_epoch,
         "last_val_metrics": last_val_metrics,
         "epochs_completed": len(history),
         "global_step": global_step,
@@ -484,7 +554,7 @@ def main():
     parser.add_argument("--output-dir", type=str, default="checkpoints/layoutlmv3-sroie")
     parser.add_argument("--best-model-dir", type=str, default="checkpoints/layoutlmv3-sroie-best")
     parser.add_argument("--model-name", type=str, default="microsoft/layoutlmv3-base")
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--grad-accum", type=int, default=4)
@@ -492,6 +562,8 @@ def main():
     parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--no-fp16", action="store_true")
     parser.add_argument("--resume-from-checkpoint", type=str, default=None)
+    parser.add_argument("--experiment-dir", type=str, default="ml/experiments")
+    parser.add_argument("--enable-mlflow", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
 
@@ -508,6 +580,8 @@ def main():
         early_stopping_patience=args.patience,
         fp16=not args.no_fp16,
         resume_from_checkpoint=args.resume_from_checkpoint,
+        experiment_dir=args.experiment_dir,
+        enable_mlflow=args.enable_mlflow,
         smoke_test=args.smoke_test,
     )
     summary = train_layoutlmv3(cfg)

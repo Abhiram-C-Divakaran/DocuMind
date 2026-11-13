@@ -78,6 +78,8 @@ Thumbs.db
 /checkpoints/
 ml/checkpoints/
 ml/data_cache/
+ml/experiments/
+mlruns/
 *.pt
 *.bin
 *.safetensors
