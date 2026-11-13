@@ -60,7 +60,7 @@ export default defineConfig({
       cwd: ROOT_DIR,
       url: `http://127.0.0.1:${E2E_BACKEND_PORT}/health`,
       reuseExistingServer: false,
-      timeout: 30_000,
+      timeout: 90_000,
       env: {
         ...CLEAN_ENV,
         E2E_BACKEND_PORT,

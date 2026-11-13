@@ -20,9 +20,9 @@
 ## 2. Dataset & Split Hygiene
 
 - **Primary Benchmark Dataset**: `arvindrajan92/sroie_document_understanding` on Hugging Face Hub (or local SROIE2019 benchmark directory via `--local-dir`).
-- **Inspected HF Hub Schema**: Single `train` split containing **652 examples** (`image` RGB receipt scan + `ocr` list of segments with `text`, 4-point pixel `box`, and entity `label` in `company`, `date`, `address`, `total`, `line_description`, `line_total`, `other`).
+- **Inspected HF Hub Schema (Verified Directly via HF API/Datasets Server)**: Single `train` split containing **652 examples** (`MIT` license, `download_size=217,146,103` bytes, `dataset_size=267,317,016` bytes; no official test split published on HF). Each record contains `image` RGB scan + `ocr` list of segments with `text`, 4-corner pixel `box`, and `label` in `['address', 'company', 'date', 'line_description', 'line_total', 'other', 'total']`.
 - **Deduplication & Splitting (`ml/data/prepare_dataset.py`)**:
-  - Single-split sources are deduplicated by image SHA-256 hash prior to splitting (`seed=42`, `80% train / 10% validation / 10% test`).
+  - Single-split sources are deduplicated by image SHA-256 hash prior to splitting (`seed=42`, `80% train / 10% validation / 10% test`) and explicitly record `has_official_test_split: false`.
   - Cross-split SHA-256 image & receipt-ID leakage checks are recorded in `dataset_manifest.json` and `validation_report.md`.
   - Corrupted or missing images are recorded in `excluded_samples` and omitted rather than replaced.
   - Synthetic receipt generation (`--allow-synthetic`) is strictly isolated to automated unit tests / explicit `--smoke-test` checks and flagged with `is_synthetic: true`.
@@ -52,10 +52,11 @@
 No real fine-tuned `LayoutLMv3` weights (`model.safetensors`) are included in this repository, and no held-out LayoutLMv3 accuracy or latency numbers are claimed.
 
 - **Local Environment Blockers Observed**:
-  - Windows Application Control policy (`WinError 4551`) on the local host blocks native extension DLLs required by `torch` (`torch_python.dll`), `pandas` (`pandas._libs.tslibs`), and `pyarrow` (`pyarrow.lib`).
-  - `tesseract.exe` is also not installed on the local Windows `PATH`.
-- **Reproducible Cloud GPU Path**:
-  - [`ml/training/DocuMind_LayoutLMv3_Training.ipynb`](ml/training/DocuMind_LayoutLMv3_Training.ipynb) executes the full workflow end-to-end on Google Colab (T4 GPU): real SROIE data preparation, LayoutLMv3 fine-tuning with experiment tracking, held-out test evaluation, `--run-full-ocr` baseline comparison, checkpoint integrity verification, and zip export.
+  - Host GPU is an **NVIDIA GeForce RTX 4050 Laptop GPU** (`6141 MiB` VRAM, CUDA `13.1`), running **Python 3.14.3**, where Windows Application Control policy (`WinError 4551`) blocks native extension DLLs required by `torch` (`torch_python.dll`), `pandas`, and `pyarrow` / `datasets`.
+  - WSL is not installed, Docker Desktop daemon is stopped, and `tesseract.exe` is not installed on the local Windows `PATH`.
+- **Reproducible Cloud GPU & Activation Path**:
+  - [`ml/training/DocuMind_LayoutLMv3_Training.ipynb`](ml/training/DocuMind_LayoutLMv3_Training.ipynb) executes the full workflow end-to-end on Google Colab (T4 GPU): CUDA/disk checks, real SROIE data preparation, isolated `/tmp` `--smoke-test`, 5-epoch LayoutLMv3 fine-tuning with experiment tracking, held-out test evaluation, `--run-full-ocr` baseline comparison, `python -m ml.training.import_checkpoint` sanity checks, and archive export (`documind_layoutlmv3_best.zip`).
+  - See [`docs/TRAINING_RESULTS.md`](docs/TRAINING_RESULTS.md) for the full Phase 5A execution & blocker report plus exact post-Colab activation commands (`import_checkpoint --target-dir checkpoints/layoutlmv3-sroie-best --apply-env`).
 
 ### Evaluation Metrics Tracked Once Executed (`ml/evaluation/evaluate.py` & `compare_models.py`)
 - Strict IOB2 per-entity precision, recall, F1, support (`COMPANY`, `DATE`, `ADDRESS`, `TOTAL`), overall micro F1, and 4-entity macro F1 (`seqeval`).

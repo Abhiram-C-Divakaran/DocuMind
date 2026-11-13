@@ -53,33 +53,60 @@ BENCHMARK_FIELDS = ["company", "date", "address", "total"]
 def create_ocr_result_from_receipt(receipt: AlignedReceipt) -> OCRResult:
     """
     Constructs a valid normalized OCRResult from an AlignedReceipt using 0.0-1.0 confidences
-    (matching ml.ocr.engine.OCRToken scale) for baseline rule evaluation on prepared OCR tokens.
+    (matching ml.ocr.engine.OCRToken scale), grouping words by y-coordinate proximity into
+    visual receipt lines so line-based baseline heuristics operate fairly.
     """
-    tokens: List[OCRToken] = []
-    for idx, (w, b) in enumerate(zip(receipt.words, receipt.boxes)):
-        tup_box = (b[0], b[1], b[2], b[3])
-        tokens.append(
-            OCRToken(
-                text=w,
-                confidence=0.95,
-                bbox=tup_box,
-                norm_bbox=tup_box,
-                page_num=1,
-                line_num=idx // 5,
-                block_num=0,
-            )
-        )
+    items: List[Tuple[float, int, str, List[int]]] = []
+    for w, b in zip(receipt.words, receipt.boxes):
+        y_center = (b[1] + b[3]) / 2.0
+        items.append((y_center, int(b[0]), w, b))
 
+    # Group tokens into visual horizontal lines in reading order
+    items_sorted = sorted(items, key=lambda it: (it[0], it[1]))
+    lines_grouped: List[List[Tuple[float, int, str, List[int]]]] = []
+    for it in items_sorted:
+        if not lines_grouped:
+            lines_grouped.append([it])
+            continue
+        cur_line = lines_grouped[-1]
+        cur_y = sum(x[0] for x in cur_line) / len(cur_line)
+        if abs(it[0] - cur_y) <= 12.0:
+            cur_line.append(it)
+        else:
+            lines_grouped.append([it])
+
+    tokens: List[OCRToken] = []
+    text_lines: List[str] = []
+    for line_idx, line_items in enumerate(lines_grouped):
+        line_items_lr = sorted(line_items, key=lambda it: it[1])
+        line_words: List[str] = []
+        for _, _, w, b in line_items_lr:
+            tup_box = (b[0], b[1], b[2], b[3])
+            tokens.append(
+                OCRToken(
+                    text=w,
+                    confidence=0.95,
+                    bbox=tup_box,
+                    norm_bbox=tup_box,
+                    page_num=1,
+                    line_num=line_idx,
+                    block_num=0,
+                )
+            )
+            line_words.append(w)
+        text_lines.append(" ".join(line_words))
+
+    reconstructed_text = "\n".join(text_lines)
     page = OCRPage(
         page_num=1,
         width=receipt.width or 1000,
         height=receipt.height or 1000,
-        text=" ".join(receipt.words),
+        text=reconstructed_text,
         tokens=tokens,
     )
 
     return OCRResult(
-        full_text=" ".join(receipt.words),
+        full_text=reconstructed_text,
         pages=[page],
         tokens=tokens,
         avg_confidence=0.95,

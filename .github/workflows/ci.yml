@@ -41,9 +41,9 @@ jobs:
           SYNC_DATABASE_URL: "sqlite:///./ci_alembic_verify.db"
           DATABASE_URL: "sqlite+aiosqlite:///./ci_alembic_verify.db"
         run: |
-          alembic upgrade head
-          alembic downgrade base
-          alembic upgrade head
+          alembic -c backend/alembic.ini upgrade head
+          alembic -c backend/alembic.ini downgrade base
+          alembic -c backend/alembic.ini upgrade head
           rm -f ci_alembic_verify.db
 
       - name: Run full pytest suite (including unmocked Tesseract OCR integration)
@@ -77,7 +77,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng libgl1 libglib2.0-0
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt aiosqlite
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r backend/requirements.txt aiosqlite
 
       - name: Install frontend dependencies & run production audit/lint/build
         working-directory: frontend

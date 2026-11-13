@@ -22,6 +22,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -55,12 +56,18 @@ def _safe_extract_zip(archive_path: Path, dest_dir: Path) -> Path:
                 raise ValueError(f"Zip entry escapes target directory: '{member.filename}'")
         zf.extractall(resolved_dest)
 
-    # Support archives wrapping a single top-level directory containing config.json
+    # Support flat archives, 1-level wrappers, or Colab export bundles (checkpoints/layoutlmv3-sroie-best/config.json)
     if (resolved_dest / "config.json").exists():
         return resolved_dest
     subdirs = [p for p in resolved_dest.iterdir() if p.is_dir() and (p / "config.json").exists()]
     if len(subdirs) == 1:
         return subdirs[0]
+    nested_cfgs = sorted(
+        {cfg.parent for cfg in resolved_dest.rglob("config.json") if cfg.is_file()},
+        key=lambda p: len(p.parts),
+    )
+    if len(nested_cfgs) == 1:
+        return nested_cfgs[0]
     return resolved_dest
 
 
@@ -90,119 +97,124 @@ def validate_and_smoke_test_checkpoint(
         report["errors"].append(f"Checkpoint path does not exist: '{checkpoint_path}'")
         return report
 
-    working_dir = checkpoint_path
-    if checkpoint_path.is_file() and checkpoint_path.suffix.lower() == ".zip":
-        unpack_dest = target_dir or Path("checkpoints") / checkpoint_path.stem
-        try:
-            working_dir = _safe_extract_zip(checkpoint_path, unpack_dest)
-            report["checks"]["archive_extraction"] = "PASS"
-        except Exception as exc:
-            report["checks"]["archive_extraction"] = "FAIL"
-            report["errors"].append(str(exc))
+    staging_tmpdir: Optional[tempfile.TemporaryDirectory] = None
+    try:
+        working_dir = checkpoint_path
+        if checkpoint_path.is_file() and checkpoint_path.suffix.lower() == ".zip":
+            if target_dir is not None:
+                staging_tmpdir = tempfile.TemporaryDirectory(prefix="documind_ckpt_stage_")
+                unpack_dest = Path(staging_tmpdir.name)
+            else:
+                unpack_dest = Path("checkpoints") / checkpoint_path.stem
+            try:
+                working_dir = _safe_extract_zip(checkpoint_path, unpack_dest)
+                report["checks"]["archive_extraction"] = "PASS"
+            except Exception as exc:
+                report["checks"]["archive_extraction"] = "FAIL"
+                report["errors"].append(str(exc))
+                return report
+        elif target_dir is not None and checkpoint_path.resolve() != target_dir.resolve():
+            # Copy directory only after structural inspection passes below
+            pass
+
+        if not working_dir.is_dir():
+            report["errors"].append(f"Expected checkpoint directory, found '{working_dir}'")
             return report
-    elif target_dir is not None and checkpoint_path.resolve() != target_dir.resolve():
-        # Copy directory only after structural inspection passes below
-        pass
 
-    if not working_dir.is_dir():
-        report["errors"].append(f"Expected checkpoint directory, found '{working_dir}'")
-        return report
+        report["resolved_checkpoint_dir"] = str(working_dir)
+        report["size_mb"] = compute_checkpoint_disk_size_mb(working_dir)
+        meta = read_sanitized_checkpoint_metadata(working_dir)
+        report["metadata"] = meta
+        is_synthetic = bool((meta or {}).get("is_synthetic") or (meta or {}).get("smoke_test"))
+        report["is_synthetic"] = is_synthetic
 
-    report["resolved_checkpoint_dir"] = str(working_dir)
-    report["size_mb"] = compute_checkpoint_disk_size_mb(working_dir)
-    meta = read_sanitized_checkpoint_metadata(working_dir)
-    report["metadata"] = meta
-    is_synthetic = bool((meta or {}).get("is_synthetic") or (meta or {}).get("smoke_test"))
-    report["is_synthetic"] = is_synthetic
+        structural_ok, structural_reason = validate_checkpoint_directory(working_dir)
+        report["checks"]["structural_files_and_label_map"] = "PASS" if structural_ok else "FAIL"
+        if not structural_ok:
+            report["errors"].append(structural_reason)
+            return report
 
-    structural_ok, structural_reason = validate_checkpoint_directory(working_dir)
-    report["checks"]["structural_files_and_label_map"] = "PASS" if structural_ok else "FAIL"
-    if not structural_ok:
-        report["errors"].append(structural_reason)
-        return report
-
-    if not HAS_TORCH:
-        report["checks"]["model_load"] = "BLOCKED"
-        report["checks"]["bounded_inference_smoke_test"] = "BLOCKED"
-        report["errors"].append(
-            "PyTorch / Transformers runtime is unavailable on this host; structural checks passed only."
-        )
-        return report
-
-    extractor = LayoutLMv3Extractor(checkpoint_dir=str(working_dir))
-    try:
-        extractor.load_model()
-        tokenizer = extractor._tokenizer
-        image_processor = extractor._image_processor
-        model = extractor._model
-        report["checks"]["model_load"] = "PASS"
-    except Exception as exc:
-        report["checks"]["model_load"] = "FAIL"
-        report["errors"].append(f"Failed loading model weights: {exc}")
-        return report
-
-    try:
-        import torch
-
-        dummy_image = Image.new("RGB", (224, 224), color=(255, 255, 255))
-        words = ["ACME", "MART", "TOTAL", "12.50"]
-        boxes = [[50, 50, 220, 90], [230, 50, 410, 90], [50, 200, 180, 240], [220, 200, 360, 240]]
-        encoded = prepare_layoutlmv3_inputs(
-            image=dummy_image,
-            words=words,
-            boxes=boxes,
-            tokenizer=tokenizer,
-            image_processor=image_processor,
-            max_length=64,
-            return_word_ids=True,
-        )
-        model_inputs = {
-            k: v.unsqueeze(0).to(extractor._device)
-            for k, v in encoded.items()
-            if k in ("input_ids", "attention_mask", "bbox", "pixel_values")
-        }
-        with torch.no_grad():
-            outputs = model(**model_inputs)
-            logits = outputs.logits[0]
-            if logits.shape[-1] != len(ID2LABEL):
-                raise ValueError(f"Expected {len(ID2LABEL)} output classes, got {logits.shape[-1]}")
-            probs = torch.softmax(logits, dim=-1)
-            pred_ids = probs.argmax(dim=-1).tolist()
-            confidences = probs.max(dim=-1).values.tolist()
-
-        decode_layoutlmv3_predictions(
-            words=words,
-            boxes=boxes,
-            word_ids=encoded["word_ids"],
-            pred_label_ids=pred_ids,
-            token_confidences=confidences,
-        )
-        report["checks"]["bounded_inference_smoke_test"] = "PASS"
-        report["smoke_test_passed"] = True
-        report["compatible"] = True
-        report["production_ready"] = not is_synthetic
-        if is_synthetic:
+        if not HAS_TORCH:
+            report["checks"]["model_load"] = "BLOCKED"
+            report["checks"]["bounded_inference_smoke_test"] = "BLOCKED"
             report["errors"].append(
-                "Checkpoint metadata marks is_synthetic/smoke_test=true; valid for integration smoke checks only, NOT production-ready."
+                "PyTorch / Transformers runtime is unavailable on this host; structural checks passed only."
             )
-    except Exception as exc:
-        report["checks"]["bounded_inference_smoke_test"] = "FAIL"
-        report["errors"].append(f"Bounded inference smoke test failed: {exc}")
+            return report
+
+        extractor = LayoutLMv3Extractor(checkpoint_dir=str(working_dir))
+        try:
+            extractor.load_model()
+            tokenizer = extractor._tokenizer
+            image_processor = extractor._image_processor
+            model = extractor._model
+            report["checks"]["model_load"] = "PASS"
+        except Exception as exc:
+            report["checks"]["model_load"] = "FAIL"
+            report["errors"].append(f"Failed loading model weights: {exc}")
+            return report
+
+        try:
+            import torch
+
+            dummy_image = Image.new("RGB", (224, 224), color=(255, 255, 255))
+            words = ["ACME", "MART", "TOTAL", "12.50"]
+            boxes = [[50, 50, 220, 90], [230, 50, 410, 90], [50, 200, 180, 240], [220, 200, 360, 240]]
+            encoded = prepare_layoutlmv3_inputs(
+                image=dummy_image,
+                words=words,
+                boxes=boxes,
+                tokenizer=tokenizer,
+                image_processor=image_processor,
+                max_seq_length=64,
+                return_word_ids=True,
+            )
+            model_inputs = {
+                k: v.unsqueeze(0).to(extractor._device)
+                for k, v in encoded.items()
+                if k in ("input_ids", "attention_mask", "bbox", "pixel_values")
+            }
+            with torch.no_grad():
+                outputs = model(**model_inputs)
+                logits = outputs.logits[0]
+                if logits.shape[-1] != len(ID2LABEL):
+                    raise ValueError(f"Expected {len(ID2LABEL)} output classes, got {logits.shape[-1]}")
+
+            decode_layoutlmv3_predictions(
+                words=words,
+                boxes=boxes,
+                word_ids=encoded["word_ids"],
+                logits=logits,
+            )
+            report["checks"]["bounded_inference_smoke_test"] = "PASS"
+            report["smoke_test_passed"] = True
+            report["compatible"] = True
+            report["production_ready"] = not is_synthetic
+            if is_synthetic:
+                report["errors"].append(
+                    "Checkpoint metadata marks is_synthetic/smoke_test=true; valid for integration smoke checks only, NOT production-ready."
+                )
+        except Exception as exc:
+            report["checks"]["bounded_inference_smoke_test"] = "FAIL"
+            report["errors"].append(f"Bounded inference smoke test failed: {exc}")
+            return report
+
+        if (
+            target_dir is not None
+            and working_dir.resolve() != target_dir.resolve()
+            and report["production_ready"]
+        ):
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            shutil.copytree(working_dir, target_dir)
+            report["installed_dir"] = str(target_dir)
+            report["resolved_checkpoint_dir"] = str(target_dir)
+
         return report
-
-    if (
-        target_dir is not None
-        and checkpoint_path.is_dir()
-        and checkpoint_path.resolve() != target_dir.resolve()
-        and report["compatible"]
-    ):
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        shutil.copytree(working_dir, target_dir)
-        report["installed_dir"] = str(target_dir)
-
-    return report
+    finally:
+        if staging_tmpdir is not None:
+            staging_tmpdir.cleanup()
 
 
 def update_env_checkpoint_dir(env_path: Path, checkpoint_dir: str) -> None:

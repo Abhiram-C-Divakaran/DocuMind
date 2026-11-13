@@ -206,7 +206,7 @@ def validate_checkpoint_directory(checkpoint_dir: Union[str, Path]) -> Tuple[boo
 
 
 def parse_extracted_date(date_str: Optional[str]) -> Optional[date]:
-    """Attempts to parse common date formats into a datetime.date object."""
+    """Attempts to parse common date formats (including SROIE date+timestamp strings) into a date."""
     if not date_str:
         return None
     cleaned = re.sub(r"^[^\w\d]+|[^\w\d]+$", "", date_str.strip())
@@ -218,6 +218,9 @@ def parse_extracted_date(date_str: Optional[str]) -> Optional[date]:
         "%d.%m.%Y",
         "%d/%m/%y",
         "%m/%d/%y",
+        "%d-%m-%y",
+        "%m-%d-%y",
+        "%d.%m.%y",
         "%d-%b-%Y",
         "%d-%b-%y",
         "%d %b %Y",
@@ -228,6 +231,23 @@ def parse_extracted_date(date_str: Optional[str]) -> Optional[date]:
             return datetime.strptime(cleaned, fmt).date()
         except ValueError:
             continue
+
+    # Fallback: extract embedded date token when timestamps/POS metadata trail the date (common in SROIE)
+    embedded_patterns = [
+        r"\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\b",
+        r"\b(?:\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b",
+        r"\b(?:\d{1,2}[\s\-]+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s\-]+\d{2,4})\b",
+    ]
+    for pat in embedded_patterns:
+        match = re.search(pat, cleaned, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = re.sub(r"\s+", " ", match.group(0).strip())
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt).date()
+            except ValueError:
+                continue
     return None
 
 

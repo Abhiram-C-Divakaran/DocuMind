@@ -76,6 +76,19 @@ TAX_KEYWORDS = [
 MONEY_REGEX = r"([$₹€£¥]|\b[A-Z]{3}\b)?\s*(\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})|\d+(?:\.\d{1,2})|\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})|\d+)"
 
 
+def _iter_monetary_amounts(line: str) -> List[str]:
+    """Extracts candidate monetary strings from a line while skipping percentages (e.g. '8%')."""
+    results: List[str] = []
+    for match in re.finditer(MONEY_REGEX, line):
+        prefix = (match.group(1) or "").strip()
+        amt_str = match.group(2)
+        trailing = line[match.end() :].lstrip()
+        if not prefix and trailing.startswith("%"):
+            continue
+        results.append(amt_str)
+    return results
+
+
 def clean_monetary_value(raw_val: str) -> Optional[Decimal]:
     """
     Cleans raw monetary strings into python Decimal:
@@ -172,9 +185,9 @@ class FinancialExtractor:
                         continue
 
                     # Search for amounts on the same line
-                    amounts = re.findall(MONEY_REGEX, line)
+                    amounts = _iter_monetary_amounts(line)
                     if amounts:
-                        for _, amt_str in amounts:
+                        for amt_str in amounts:
                             val = clean_monetary_value(amt_str)
                             if val:
                                 total_candidates.append(
@@ -183,9 +196,9 @@ class FinancialExtractor:
                     elif idx + 1 < len(lines):
                         # Search line immediately below
                         next_line = lines[idx + 1]
-                        amounts_next = re.findall(MONEY_REGEX, next_line)
+                        amounts_next = _iter_monetary_amounts(next_line)
                         if amounts_next:
-                            for _, amt_str in amounts_next:
+                            for amt_str in amounts_next:
                                 val = clean_monetary_value(amt_str)
                                 if val:
                                     total_candidates.append(
@@ -195,9 +208,9 @@ class FinancialExtractor:
             # 2. Tax Candidates
             for kw_pat, base_weight in TAX_KEYWORDS:
                 if re.search(kw_pat, line_upper):
-                    amounts = re.findall(MONEY_REGEX, line)
+                    amounts = _iter_monetary_amounts(line)
                     if amounts:
-                        for _, amt_str in amounts:
+                        for amt_str in amounts:
                             val = clean_monetary_value(amt_str)
                             if val:
                                 tax_candidates.append(
@@ -210,7 +223,7 @@ class FinancialExtractor:
             # Fallback: scan for highest reasonable amount in the bottom half of the document
             fallback_candidates = []
             for line in lines[len(lines) // 2 :]:
-                for _, amt_str in re.findall(MONEY_REGEX, line):
+                for amt_str in _iter_monetary_amounts(line):
                     v = clean_monetary_value(amt_str)
                     if v and v > 0:
                         fallback_candidates.append((v, amt_str, line))

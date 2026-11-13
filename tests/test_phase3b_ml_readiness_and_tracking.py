@@ -460,7 +460,10 @@ def test_colab_notebook_structure_and_python_syntax():
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
     assert nb["nbformat"] == 4
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
-    assert len(code_cells) >= 4
+    assert len(code_cells) >= 5
+    full_nb_src = "\n".join("".join(c["source"]) for c in code_cells)
+    assert "--smoke-test" in full_nb_src
+    assert "ml.training.import_checkpoint" in full_nb_src
     for idx, cell in enumerate(code_cells):
         src = "".join(cell["source"])
         # Replace IPython shell/magic commands (including multi-line '\' continuations) cleanly before AST compile verification
@@ -478,3 +481,116 @@ def test_colab_notebook_structure_and_python_syntax():
             else:
                 py_lines.append(ln)
         compile("\n".join(py_lines), f"cell_{idx}", "exec")
+
+
+def test_parse_extracted_date_handles_sroie_timestamps_and_short_years():
+    from datetime import date
+    from ml.extractors.layoutlmv3_extractor import parse_extracted_date
+
+    assert parse_extracted_date("25/12/2018 8:13:39 PM") == date(2018, 12, 25)
+    assert parse_extracted_date("19/10/2018 20:49:59 #01") == date(2018, 10, 19)
+    assert parse_extracted_date("12-01-19 21:13 SH01 ZK09") == date(2019, 1, 12)
+    assert parse_extracted_date("2026-10-18") == date(2026, 10, 18)
+
+
+def test_multiline_ocr_reconstruction_and_percentage_tax_filtering():
+    from ml.data.annotation_alignment import LABEL2ID, AlignedReceipt
+    from ml.evaluation.compare_models import create_ocr_result_from_receipt
+    from ml.extraction.pipeline import ReceiptExtractionPipeline
+
+    labels = [
+        "B-COMPANY", "I-COMPANY",
+        "O", "B-DATE",
+        "O", "O", "O", "O",
+        "O", "O", "O", "B-TOTAL",
+    ]
+    receipt = AlignedReceipt(
+        receipt_id="r_multiline",
+        words=[
+            "SUNRISE", "BAKERY",
+            "DATE:", "2026-10-18",
+            "TAX", "(8%)", "USD", "1.92",
+            "TOTAL", "PAID", "USD", "25.92",
+        ],
+        boxes=[
+            [50, 50, 200, 80], [210, 50, 350, 80],
+            [50, 150, 140, 180], [150, 150, 300, 180],
+            [50, 400, 110, 430], [120, 400, 190, 430], [450, 400, 520, 430], [530, 400, 620, 430],
+            [50, 460, 150, 490], [160, 460, 250, 490], [450, 460, 520, 490], [530, 460, 620, 490],
+        ],
+        labels=labels,
+        ner_tags=[LABEL2ID[lbl] for lbl in labels],
+        ground_truth={"company": "SUNRISE BAKERY", "date": "2026-10-18", "total": "25.92"},
+        alignment_stats={"COMPANY": True, "DATE": True, "ADDRESS": False, "TOTAL": True},
+        width=760,
+        height=1020,
+    )
+    ocr_res = create_ocr_result_from_receipt(receipt)
+    assert "\n" in ocr_res.full_text
+    assert len(ocr_res.full_text.splitlines()) == 4
+
+    extracted = ReceiptExtractionPipeline().process(ocr_res)
+    assert extracted.vendor_name.value == "SUNRISE BAKERY"
+    assert str(extracted.total_amount.value) == "25.92"
+    assert str(extracted.tax_amount.value) == "1.92"
+
+
+def test_import_checkpoint_uses_real_signatures_and_unpacks_colab_nested_zip(tmp_path: Path):
+    import inspect
+    import zipfile
+    import ml.training.import_checkpoint as imp_mod
+    from ml.training.dataset import prepare_layoutlmv3_inputs
+    from ml.inference.decoder import decode_layoutlmv3_predictions
+
+    # Build a Colab-style export archive where checkpoint resides at checkpoints/layoutlmv3-sroie-best/
+    bundle_zip = tmp_path / "documind_layoutlmv3_best.zip"
+    cfg = {
+        "model_type": "layoutlmv3",
+        "id2label": {str(k): v for k, v in ID2LABEL.items()},
+        "label2id": {v: k for k, v in ID2LABEL.items()},
+    }
+    with zipfile.ZipFile(bundle_zip, "w") as zf:
+        zf.writestr("checkpoints/layoutlmv3-sroie-best/config.json", json.dumps(cfg))
+        zf.writestr("checkpoints/layoutlmv3-sroie-best/tokenizer_config.json", "{}")
+        zf.writestr("checkpoints/layoutlmv3-sroie-best/tokenizer.json", "{}")
+        zf.writestr("checkpoints/layoutlmv3-sroie-best/model.safetensors", b"real-weights-bytes")
+        zf.writestr(
+            "checkpoints/layoutlmv3-sroie-best/checkpoint_metadata.json",
+            json.dumps({"is_synthetic": False, "smoke_test": False, "epoch": 5}),
+        )
+        zf.writestr("ml/experiments/latest_experiment.json", "{}")
+
+    prep_sig = inspect.signature(prepare_layoutlmv3_inputs)
+    dec_sig = inspect.signature(decode_layoutlmv3_predictions)
+
+    def _checked_prep(*args, **kwargs):
+        prep_sig.bind(*args, **kwargs)
+        return {"word_ids": [None, 0, None]}
+
+    def _checked_decode(*args, **kwargs):
+        dec_sig.bind(*args, **kwargs)
+        return {"fields": {}, "confidences": {}}
+
+    fake_model = MagicMock()
+    fake_model.return_value.logits.__getitem__.return_value.shape = (10, len(ID2LABEL))
+
+    def _fake_load(self):
+        self._tokenizer = MagicMock()
+        self._image_processor = MagicMock()
+        self._model = fake_model
+
+    target_dir = tmp_path / "installed" / "layoutlmv3-sroie-best"
+    with (
+        patch.object(imp_mod, "HAS_TORCH", True),
+        patch.object(imp_mod, "prepare_layoutlmv3_inputs", side_effect=_checked_prep),
+        patch.object(imp_mod, "decode_layoutlmv3_predictions", side_effect=_checked_decode),
+        patch.object(imp_mod.LayoutLMv3Extractor, "load_model", _fake_load),
+        patch.dict("sys.modules", {"torch": MagicMock()}),
+    ):
+        report = imp_mod.validate_and_smoke_test_checkpoint(bundle_zip, target_dir=target_dir)
+
+    assert report["compatible"] is True
+    assert report["production_ready"] is True
+    assert report["smoke_test_passed"] is True
+    assert (target_dir / "config.json").exists()
+    assert (target_dir / "model.safetensors").exists()
