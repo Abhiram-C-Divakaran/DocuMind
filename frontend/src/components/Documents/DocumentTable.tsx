@@ -1,6 +1,7 @@
 import React from 'react';
 import { DocumentItem } from '../../types';
 import { StatusBadge } from './StatusBadge';
+import { ReviewStatusBadge } from './ReviewStatusBadge';
 import { TableRowSkeleton } from '../Common/Skeleton';
 import { EmptyState } from '../Common/EmptyState';
 import {
@@ -12,6 +13,7 @@ import {
   ChevronRight,
   FileCode,
   Calendar,
+  ClipboardCheck,
 } from 'lucide-react';
 
 interface DocumentTableProps {
@@ -26,6 +28,7 @@ interface DocumentTableProps {
   onStatusFilterChange: (val: string) => void;
   onPageChange: (newPage: number) => void;
   onSelectDocument: (doc: DocumentItem) => void;
+  onReviewDocument?: (doc: DocumentItem) => void;
   onUploadClick: () => void;
 }
 
@@ -41,6 +44,7 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
   onStatusFilterChange,
   onPageChange,
   onSelectDocument,
+  onReviewDocument,
   onUploadClick,
 }) => {
   const totalPages = Math.ceil(total / pageSize) || 1;
@@ -106,7 +110,8 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
               <th className="py-3.5 px-4">MIME / Signature</th>
               <th className="py-3.5 px-4">Size</th>
               <th className="py-3.5 px-4">Pipeline</th>
-              <th className="py-3.5 px-4">Status</th>
+              <th className="py-3.5 px-4">Processing</th>
+              <th className="py-3.5 px-4">Review</th>
               <th className="py-3.5 px-4">Ingested At</th>
               <th className="py-3.5 px-4 text-right">Actions</th>
             </tr>
@@ -114,14 +119,14 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
           <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
             {loading ? (
               <>
-                <TableRowSkeleton cols={7} />
-                <TableRowSkeleton cols={7} />
-                <TableRowSkeleton cols={7} />
-                <TableRowSkeleton cols={7} />
+                <TableRowSkeleton cols={8} />
+                <TableRowSkeleton cols={8} />
+                <TableRowSkeleton cols={8} />
+                <TableRowSkeleton cols={8} />
               </>
             ) : documents.length === 0 ? (
               <tr>
-                <td colSpan={7} className="p-8">
+                <td colSpan={8} className="p-8">
                   <EmptyState
                     icon={FileText}
                     title="No documents found"
@@ -181,6 +186,10 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
                       <StatusBadge status={doc.status} size="sm" />
                     </td>
 
+                    <td className="py-3.5 px-4">
+                      <ReviewStatusBadge status={doc.review_status || 'NOT_REQUIRED'} size="sm" />
+                    </td>
+
                     <td className="py-3.5 px-4 text-slate-500 text-[11px]">
                       <div className="flex items-center gap-1.5">
                         <Calendar className="w-3.5 h-3.5 text-slate-400" />
@@ -189,16 +198,30 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
                     </td>
 
                     <td className="py-3.5 px-4 text-right">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectDocument(doc);
-                        }}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 transition-colors"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>Inspect</span>
-                      </button>
+                      <div className="inline-flex items-center gap-1">
+                        {onReviewDocument && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onReviewDocument(doc);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 transition-colors"
+                          >
+                            <ClipboardCheck className="w-3.5 h-3.5" />
+                            <span>Review</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectDocument(doc);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 transition-colors"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Inspect</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

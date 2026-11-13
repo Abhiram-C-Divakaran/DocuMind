@@ -16,7 +16,13 @@ if str(root_dir) not in sys.path:
 from backend.app.config import settings
 from backend.app.database import Base
 # Ensure all models are imported so Alembic discovers metadata
-from backend.app.models import Document, ExtractionResult
+from backend.app.models import (  # noqa: F401
+    Document,
+    DocumentReview,
+    ExtractionResult,
+    FieldCorrection,
+    ReviewAuditEvent,
+)
 
 config = context.config
 

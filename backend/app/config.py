@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     DEFAULT_DATE_FORMAT_ORDER: str = "DMY"
     LAYOUTLMV3_CHECKPOINT_DIR: str = "checkpoints/layoutlmv3-sroie-best"
 
+    # Human-in-the-Loop Review & Preview Configuration
+    REVIEW_CONFIDENCE_THRESHOLD: float = 0.75
+    PREVIEW_MAX_PDF_PAGES: int = 20
+    PREVIEW_RENDER_DPI: int = 150
+    DEFAULT_REVIEWER_ID: str = "local-anonymous"
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:

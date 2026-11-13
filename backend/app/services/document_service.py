@@ -54,6 +54,7 @@ class DocumentService:
         content_type: str,
         file_bytes: bytes,
         extraction_method: Optional[str] = None,
+        request_review: bool = False,
     ) -> Tuple[Document, str]:
         """
         Validates, persists, records and executes extraction for an uploaded document.
@@ -103,6 +104,7 @@ class DocumentService:
         await db.refresh(document)
 
         status_message: str
+        saved_extraction: Optional[ExtractionResult] = None
 
         # 5. Run extraction
         if is_real_extractor:
@@ -130,7 +132,9 @@ class DocumentService:
                 document.status = DocumentStatus.COMPLETED.value
                 document.updated_at = datetime.now(timezone.utc)
                 await db.commit()
+                await db.refresh(extraction_record)
                 await db.refresh(document)
+                saved_extraction = extraction_record
 
                 status_message = (
                     f"Document '{document.original_filename}' processed successfully via {method_label}."
@@ -160,7 +164,9 @@ class DocumentService:
                 )
                 db.add(failed_extraction)
                 await db.commit()
+                await db.refresh(failed_extraction)
                 await db.refresh(document)
+                saved_extraction = failed_extraction
 
                 status_message = (
                     f"Document '{document.original_filename}' uploaded but {method_label} failed: {sanitized_error}"
@@ -184,11 +190,23 @@ class DocumentService:
             document.status = DocumentStatus.PENDING.value
             document.updated_at = datetime.now(timezone.utc)
             await db.commit()
+            await db.refresh(extraction_record)
             await db.refresh(document)
+            saved_extraction = extraction_record
 
             status_message = (
                 f"Document '{document.original_filename}' uploaded in placeholder mode (status: PENDING)."
             )
+
+        # 6. Initialize Phase 3A Human-in-the-Loop Review State
+        from backend.app.services.review_service import review_service
+
+        await review_service.initialize_review_after_extraction(
+            db=db,
+            document=document,
+            extraction=saved_extraction,
+            explicit_request=request_review,
+        )
 
         # Return document with extractions eagerly loaded
         refreshed_doc = await self.get_document_by_id(db, document.id)
@@ -212,6 +230,7 @@ class DocumentService:
         skip: int = 0,
         limit: int = 20,
         status: Optional[str] = None,
+        review_status: Optional[str] = None,
         search: Optional[str] = None,
     ) -> Tuple[List[Document], int]:
         query = select(Document).options(selectinload(Document.extractions))
@@ -220,6 +239,10 @@ class DocumentService:
         if status:
             query = query.where(Document.status == status.upper())
             count_query = count_query.where(Document.status == status.upper())
+
+        if review_status:
+            query = query.where(Document.review_status == review_status.upper())
+            count_query = count_query.where(Document.review_status == review_status.upper())
 
         if search:
             search_filter = Document.original_filename.ilike(f"%{search}%")

@@ -15,6 +15,9 @@ class DocumentResponse(DocumentBase):
 
     id: str
     status: str
+    review_status: str = "NOT_REQUIRED"
+    needs_review: bool = False
+    review_reasons: List[str] = Field(default_factory=list)
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime

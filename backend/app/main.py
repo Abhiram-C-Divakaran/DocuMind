@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.app.api.routes import documents_router, health_router
+from backend.app.api.routes import documents_router, health_router, reviews_router
 from backend.app.config import settings
 from backend.app.core.exceptions import DocuMindException
 from backend.app.database import Base, engine
@@ -107,6 +107,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # Mount routers
 app.include_router(health_router)
 app.include_router(documents_router, prefix=settings.API_V1_STR)
+app.include_router(reviews_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/", include_in_schema=False)

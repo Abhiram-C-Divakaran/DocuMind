@@ -8,25 +8,34 @@ import {
   Database,
   CheckCircle2,
   AlertCircle,
+  ClipboardCheck,
 } from 'lucide-react';
 import { HealthStatus } from '../../types';
 
-export type NavTab = 'dashboard' | 'documents' | 'upload' | 'ml-architecture';
+export type NavTab = 'dashboard' | 'documents' | 'reviews' | 'upload' | 'ml-architecture';
 
 interface SidebarProps {
   currentTab: NavTab;
   onTabChange: (tab: NavTab) => void;
   health: HealthStatus | null;
+  awaitingReviewCount?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentTab,
   onTabChange,
   health,
+  awaitingReviewCount = 0,
 }) => {
   const navItems = [
     { id: 'dashboard' as NavTab, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'documents' as NavTab, label: 'Document Ledger', icon: FileText },
+    {
+      id: 'reviews' as NavTab,
+      label: 'Review Queue',
+      icon: ClipboardCheck,
+      badge: awaitingReviewCount > 0 ? awaitingReviewCount : undefined,
+    },
     { id: 'upload' as NavTab, label: 'Upload Documents', icon: UploadCloud },
     { id: 'ml-architecture' as NavTab, label: 'ML & Architecture', icon: Cpu },
   ];
@@ -42,7 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
         <div>
           <h1 className="text-sm font-semibold tracking-wide text-white">DocuMind</h1>
-          <p className="text-[11px] text-slate-400 font-medium">Phase 1 Intelligence</p>
+          <p className="text-[11px] text-slate-400 font-medium">Document Intelligence</p>
         </div>
       </div>
 
@@ -58,14 +67,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               key={item.id}
               onClick={() => onTabChange(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                 isActive
                   ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
                   : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/60'
               }`}
             >
-              <Icon className="w-4 h-4 shrink-0" />
-              <span>{item.label}</span>
+              <span className="flex items-center gap-3">
+                <Icon className="w-4 h-4 shrink-0" />
+                <span>{item.label}</span>
+              </span>
+              {item.badge !== undefined && (
+                <span
+                  className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-full ${
+                    isActive
+                      ? 'bg-white/20 text-white'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-400/30'
+                  }`}
+                >
+                  {item.badge}
+                </span>
+              )}
             </button>
           );
         })}
@@ -102,7 +124,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           <div className="flex justify-between">
             <span>Phase:</span>
-            <span className="text-indigo-400 font-semibold">2A (OCR Pipeline)</span>
+            <span className="text-indigo-400 font-semibold">3A (HITL Review)</span>
           </div>
         </div>
       </div>

@@ -64,6 +64,14 @@ class TesseractBaselineExtractor(BaseExtractor):
             "is_real_ocr": True,
             "evidence": extraction_res.evidence_map,
             "needs_manual_review": extraction_res.needs_manual_review,
+            "ocr_tokens": [
+                {
+                    "text": t.text,
+                    "norm_bbox": list(t.norm_bbox),
+                    "page_num": t.page_num,
+                }
+                for t in ocr_result.tokens[:1000]
+            ],
             **extraction_res.metadata,
         }
 

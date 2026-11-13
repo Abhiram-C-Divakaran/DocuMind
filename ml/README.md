@@ -1,8 +1,9 @@
-# DocuMind ML Subsystem (Phase 2C — SROIE & LayoutLMv3 Multimodal Intelligence)
+# DocuMind ML Subsystem (Phase 3A — SROIE, LayoutLMv3 & Active Learning Feedback)
 
 This package contains the machine learning subsystem for DocuMind:
 1. **Phase 2A**: Tesseract OCR and rule-based receipt extraction pipeline (`TesseractBaselineExtractor`).
 2. **Phase 2B/2C**: Reproducible deep learning data ingestion, unified multimodal preprocessing, LayoutLMv3 fine-tuning on real SROIE receipt images, held-out evaluation, comparative benchmarking, and validated FastAPI inference (`LayoutLMv3Extractor`).
+3. **Phase 3A**: Human-in-the-loop validated active-learning feedback export pipeline (`ml/feedback/`) producing audited JSONL datasets exclusively from `APPROVED` reviews without triggering unsafe automatic retraining.
 
 ---
 
@@ -15,6 +16,11 @@ ml/
 │   ├── sroie_loader.py          # Verified SROIE loader (HF / local split dirs) & PNG smoke generator
 │   ├── prepare_dataset.py       # Reproducible splitting, SHA-256 deduplication & leakage checks
 │   └── dataset_validation.py    # Audit statistics, image integrity & alignment reports
+├── feedback/
+│   ├── feedback_loader.py       # Queries DB for APPROVED DocumentReviews (tracks excluded counts)
+│   ├── feedback_validator.py    # Pydantic validation, SHA-256 deduplication & split contamination guard
+│   ├── feedback_quality.py      # Conservative OCR token alignment check (ALIGNED_CONFIDENT vs manual)
+│   └── export_annotations.py    # CLI & async helper generating feedback_export.jsonl & summaries
 ├── training/
 │   ├── config.py                # Hyperparameters dataclass & CUDA/MPS/CPU device detection
 │   ├── dataset.py               # Shared prepare_layoutlmv3_inputs() preprocessing & PyTorch Dataset
@@ -151,3 +157,21 @@ python -m ml.evaluation.compare_models \
 - If the LayoutLMv3 checkpoint is missing, invalid, or cannot be loaded, `evaluate.py` and `compare_models.py` mark LayoutLMv3 as `NOT_EVALUATED` with `null` metrics rather than reporting fabricated `0.0` F1 or `0.0 ms` latency.
 - Full-pipeline latency (`ocr_latency_ms` + `feature_prep_latency_ms` + `model_inference_latency_ms`) is reported separately from model-only or rule-parse-only latency.
 - Synthetic smoke datasets are explicitly rejected by `evaluate.py` and `compare_models.py` unless `--allow-synthetic` is passed, in which case all reports are labeled `SYNTHETIC SMOKE TEST`.
+
+---
+
+## 6. Phase 3A Active-Learning Feedback Export (`ml/feedback/`)
+
+Only human-reviewed records with `review_status == APPROVED` are eligible for export:
+
+```bash
+python -m ml.feedback.export_annotations \
+    --output-dir data/feedback_exports \
+    --reference-splits data/sroie_processed/test.jsonl data/sroie_processed/validation.jsonl
+```
+
+Safeguards enforced automatically:
+1. **Approval Gating**: `PENDING_REVIEW`, `IN_REVIEW`, `REJECTED`, and `NOT_REQUIRED` documents are strictly excluded and reported in `excluded_by_review_status`.
+2. **Integrity & Deduplication**: Validates `corrected_values` via `ReviewCorrectionPayload`, verifies source file existence inside `UPLOAD_DIR`, and removes duplicate image SHA-256 hashes.
+3. **Train/Test Contamination Prevention**: Hashes are cross-checked against held-out `test.jsonl` and `validation.jsonl` splits before writing `feedback_export.jsonl`.
+4. **Conservative Token Alignment**: Records are labeled `ALIGNED_CONFIDENT` only when OCR words + bounding boxes unambiguously match corrected values; otherwise they are marked `NEEDS_MANUAL_ANNOTATION`. Document-level strings are never blindly treated as BIO token labels, and automatic retraining is disabled (`automatic_retraining_launched: false`).

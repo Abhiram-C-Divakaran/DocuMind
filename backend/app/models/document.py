@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import BigInteger, Column, DateTime, Enum, ForeignKey, Index, String, Text, func
+from sqlalchemy import JSON, BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import relationship
 from backend.app.database import Base
 
@@ -29,6 +29,14 @@ class Document(Base):
         nullable=False,
         index=True
     )
+    review_status = Column(
+        String(30),
+        default="NOT_REQUIRED",
+        nullable=False,
+        index=True,
+    )
+    needs_review = Column(Boolean, default=False, nullable=False, index=True)
+    review_reasons = Column(JSON, nullable=False, default=list)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -38,6 +46,12 @@ class Document(Base):
         back_populates="document",
         cascade="all, delete-orphan",
         order_by="desc(ExtractionResult.created_at)"
+    )
+    review = relationship(
+        "DocumentReview",
+        back_populates="document",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

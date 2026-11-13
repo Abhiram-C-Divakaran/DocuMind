@@ -1,24 +1,43 @@
 from backend.app.schemas.document import (
-    DocumentBase,
-    DocumentResponse,
     DocumentListResponse,
+    DocumentResponse,
     DocumentUploadResponse,
 )
 from backend.app.schemas.extraction import (
+    ExtractionResultResponse,
     LineItem,
     StructuredExtractionData,
-    ExtractionResultBase,
-    ExtractionResultResponse,
+)
+from backend.app.schemas.review import (
+    DocumentReviewResponse,
+    FieldCorrectionResponse,
+    PreviewMetaResponse,
+    ReviewAuditEventResponse,
+    ReviewCorrectionPayload,
+    ReviewDecisionRequest,
+    ReviewHistoryResponse,
+    ReviewListResponse,
+    ReviewMetricsResponse,
+    ReviewQueueItem,
+    ReviewUpdateRequest,
 )
 
 __all__ = [
-    "DocumentBase",
     "DocumentResponse",
     "DocumentListResponse",
     "DocumentUploadResponse",
+    "ExtractionResultResponse",
     "LineItem",
     "StructuredExtractionData",
-    "ExtractionResultBase",
-    "ExtractionResultResponse",
+    "DocumentReviewResponse",
+    "FieldCorrectionResponse",
+    "PreviewMetaResponse",
+    "ReviewAuditEventResponse",
+    "ReviewCorrectionPayload",
+    "ReviewDecisionRequest",
+    "ReviewHistoryResponse",
+    "ReviewListResponse",
+    "ReviewMetricsResponse",
+    "ReviewQueueItem",
+    "ReviewUpdateRequest",
 ]
-

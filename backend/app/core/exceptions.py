@@ -52,3 +52,23 @@ class StorageError(DocuMindException):
             detail=detail,
             error_code="STORAGE_ERROR",
         )
+
+
+class ConflictError(DocuMindException):
+    def __init__(self, detail: str, error_code: str = "CONFLICT", extra: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=detail,
+            error_code=error_code,
+            extra=extra,
+        )
+
+
+class ReviewNotFoundError(DocuMindException):
+    def __init__(self, document_id: str):
+        super().__init__(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Review record for document '{document_id}' was not found.",
+            error_code="REVIEW_NOT_FOUND",
+            extra={"document_id": document_id},
+        )

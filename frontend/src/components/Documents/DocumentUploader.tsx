@@ -21,6 +21,7 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [extractionMethod, setExtractionMethod] = useState<string>('TESSERACT_BASELINE');
+  const [requestReview, setRequestReview] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [validationWarning, setValidationWarning] = useState<string | null>(null);
@@ -81,9 +82,10 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
     setUploadError(null);
 
     try {
-      const res = await apiClient.uploadDocument(selectedFile, extractionMethod);
+      const res = await apiClient.uploadDocument(selectedFile, extractionMethod, requestReview);
       onUploadSuccess(res);
       setSelectedFile(null);
+      setRequestReview(false);
     } catch (err: unknown) {
       const error = err as Error & { details?: Record<string, unknown> };
       setUploadError(error.message || 'Failed to upload document.');
@@ -246,6 +248,17 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
                 </button>
               ))}
             </div>
+
+            <label className="mt-3 flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={requestReview}
+                disabled={isUploading}
+                onChange={(e) => setRequestReview(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>Flag for manual human review regardless of confidence threshold</span>
+            </label>
           </div>
         </div>
       )}

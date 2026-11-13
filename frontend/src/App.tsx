@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiClient } from './api/client';
-import { DocumentItem, DashboardMetrics, HealthStatus, DocumentUploadResponse } from './types';
+import {
+  DocumentItem,
+  DashboardMetrics,
+  HealthStatus,
+  DocumentUploadResponse,
+  ReviewMetrics,
+} from './types';
 import { Sidebar, NavTab } from './components/Layout/Sidebar';
 import { Header } from './components/Layout/Header';
 import { MetricsOverview } from './components/Dashboard/MetricsOverview';
@@ -8,14 +14,20 @@ import { DocumentTable } from './components/Documents/DocumentTable';
 import { DocumentUploader } from './components/Documents/DocumentUploader';
 import { DocumentDetailModal } from './components/Documents/DocumentDetailModal';
 import { MlArchitectureView } from './components/Dashboard/MlArchitectureView';
+import { ReviewQueue } from './components/Reviews/ReviewQueue';
+import { DocumentReviewWorkspace } from './components/Reviews/DocumentReviewWorkspace';
 import { Toast, ToastMessage } from './components/Common/Toast';
 import { UploadCloud, FileText } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
+  const [activeReviewDocId, setActiveReviewDocId] = useState<string | null>(null);
+  const [reviewRefreshSignal, setReviewRefreshSignal] = useState<number>(0);
+
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [totalDocs, setTotalDocs] = useState<number>(0);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+  const [reviewMetrics, setReviewMetrics] = useState<ReviewMetrics | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
 
   const [loadingDocs, setLoadingDocs] = useState<boolean>(true);
@@ -55,8 +67,14 @@ export const App: React.FC = () => {
   const loadMetrics = useCallback(async () => {
     setLoadingMetrics(true);
     try {
-      const data = await apiClient.fetchMetrics();
-      setMetrics(data);
+      const [docStats, revStats] = await Promise.all([
+        apiClient.fetchMetrics(),
+        apiClient.fetchReviewMetrics().catch(() => null),
+      ]);
+      setMetrics(docStats);
+      if (revStats) {
+        setReviewMetrics(revStats);
+      }
     } catch (err: unknown) {
       console.error('Failed to load metrics:', err);
     } finally {
@@ -87,6 +105,7 @@ export const App: React.FC = () => {
   const handleRefreshAll = async () => {
     setIsRefreshing(true);
     await Promise.all([loadHealth(), loadMetrics(), loadDocuments()]);
+    setReviewRefreshSignal((n) => n + 1);
     setIsRefreshing(false);
     showToast('info', 'Data Refreshed', 'Latest documents and metrics synchronized.');
   };
@@ -104,7 +123,13 @@ export const App: React.FC = () => {
     showToast('success', 'Document Ingested', response.message);
     loadMetrics();
     loadDocuments();
+    setReviewRefreshSignal((n) => n + 1);
     setCurrentTab('documents');
+  };
+
+  const handleOpenReviewWorkspace = (documentId: string) => {
+    setActiveReviewDocId(documentId);
+    setCurrentTab('reviews');
   };
 
   return (
@@ -112,8 +137,14 @@ export const App: React.FC = () => {
       {/* Sidebar */}
       <Sidebar
         currentTab={currentTab}
-        onTabChange={(tab) => setCurrentTab(tab)}
+        onTabChange={(tab) => {
+          if (tab !== 'reviews') {
+            setActiveReviewDocId(null);
+          }
+          setCurrentTab(tab);
+        }}
         health={health}
+        awaitingReviewCount={reviewMetrics?.awaiting_review ?? 0}
       />
 
       {/* Main Container */}
@@ -131,7 +162,15 @@ export const App: React.FC = () => {
           {currentTab === 'dashboard' && (
             <div className="space-y-8 max-w-7xl mx-auto">
               {/* Telemetry Metrics Cards */}
-              <MetricsOverview metrics={metrics} loading={loadingMetrics} />
+              <MetricsOverview
+                metrics={metrics}
+                reviewMetrics={reviewMetrics}
+                loading={loadingMetrics}
+                onOpenReviewQueue={() => {
+                  setActiveReviewDocId(null);
+                  setCurrentTab('reviews');
+                }}
+              />
 
               {/* Quick Actions & Recent Docs Grid */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -162,6 +201,7 @@ export const App: React.FC = () => {
                     onStatusFilterChange={setStatusFilter}
                     onPageChange={setPage}
                     onSelectDocument={(doc) => setSelectedDoc(doc)}
+                    onReviewDocument={(doc) => handleOpenReviewWorkspace(doc.id)}
                     onUploadClick={() => setCurrentTab('upload')}
                   />
                 </div>
@@ -192,8 +232,30 @@ export const App: React.FC = () => {
                 onStatusFilterChange={setStatusFilter}
                 onPageChange={setPage}
                 onSelectDocument={(doc) => setSelectedDoc(doc)}
+                onReviewDocument={(doc) => handleOpenReviewWorkspace(doc.id)}
                 onUploadClick={() => setCurrentTab('upload')}
               />
+            </div>
+          )}
+
+          {currentTab === 'reviews' && (
+            <div className="space-y-6 max-w-7xl mx-auto">
+              {activeReviewDocId ? (
+                <DocumentReviewWorkspace
+                  documentId={activeReviewDocId}
+                  onBack={() => setActiveReviewDocId(null)}
+                  onReviewUpdated={() => {
+                    loadMetrics();
+                    loadDocuments();
+                    setReviewRefreshSignal((n) => n + 1);
+                  }}
+                />
+              ) : (
+                <ReviewQueue
+                  onOpenReview={(docId) => setActiveReviewDocId(docId)}
+                  refreshSignal={reviewRefreshSignal}
+                />
+              )}
             </div>
           )}
 
@@ -214,6 +276,7 @@ export const App: React.FC = () => {
       <DocumentDetailModal
         document={selectedDoc}
         onClose={() => setSelectedDoc(null)}
+        onOpenReview={handleOpenReviewWorkspace}
       />
 
       {/* Global Toast */}

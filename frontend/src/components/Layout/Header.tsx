@@ -24,6 +24,10 @@ export const Header: React.FC<HeaderProps> = ({
       title: 'Document Ledger',
       subtitle: 'Audit trail of uploaded invoices, receipts and structured extractions',
     },
+    reviews: {
+      title: 'Human Review & Active Learning',
+      subtitle: 'Inspect low-confidence extractions, edit predictions, and approve training feedback',
+    },
     upload: {
       title: 'Ingestion Portal',
       subtitle: 'Upload receipts and invoices with cryptographic signature validation',

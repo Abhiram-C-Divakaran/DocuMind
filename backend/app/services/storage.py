@@ -40,11 +40,15 @@ class StorageService:
             raise StorageError(f"Failed to persist file: {e}")
 
     def get_file_path(self, stored_filename: str) -> Path:
-        target = (self.base_dir / stored_filename).resolve()
-        # Security check: prevent directory traversal
-        if not str(target).startswith(str(self.base_dir)):
+        base = self.base_dir.resolve()
+        if not stored_filename or "/" in stored_filename or "\\" in stored_filename or ".." in stored_filename:
+            raise StorageError("Access denied: Invalid stored filename.")
+        target = (base / stored_filename).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
             raise StorageError("Access denied: Invalid file path traversal detected.")
-        if not target.exists():
+        if not target.exists() or not target.is_file():
             raise StorageError(f"File {stored_filename} does not exist.")
         return target
 

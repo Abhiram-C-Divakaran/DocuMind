@@ -2,7 +2,7 @@
 
 DocuMind is a production-oriented multimodal document intelligence platform designed to ingest scanned receipts and invoices, validate binary file integrity, perform high-resolution OCR, extract structured tabular and entity data, and maintain an immutable processing ledger.
 
-**Current Release**: **Phase 2C (Tesseract OCR + Verified SROIE LayoutLMv3 Training & Scientific Benchmarking)**
+**Current Release**: **Phase 3A (Human-in-the-Loop Document Review & Active Learning Foundation)**
 
 ---
 
@@ -30,13 +30,13 @@ DocuMind is a production-oriented multimodal document intelligence platform desi
 ```
 Doc/
 ├── backend/                  # FastAPI backend service
-│   ├── alembic/              # Database migration definitions (001, 002)
+│   ├── alembic/              # Database migration definitions (001, 002, 003)
 │   ├── app/
-│   │   ├── api/              # API routes (/health, /api/v1/documents)
+│   │   ├── api/              # API routes (/health, /api/v1/documents, /api/v1/reviews)
 │   │   ├── core/             # Central error handlers and middleware
-│   │   ├── models/           # SQLAlchemy ORM models (Document, ExtractionResult)
-│   │   ├── schemas/          # Pydantic v2 schemas (decimal-safe currency & line items)
-│   │   ├── services/         # Storage and cryptographic signature validator
+│   │   ├── models/           # SQLAlchemy ORM models (Document, ExtractionResult, DocumentReview)
+│   │   ├── schemas/          # Pydantic v2 schemas (extraction, review, financial validation)
+│   │   ├── services/         # Document ingestion, review workflow, cryptographic validation, storage
 │   │   ├── config.py         # Pydantic BaseSettings environment loader
 │   │   ├── database.py       # Async SQLAlchemy session and connection engine
 │   │   ├── logger.py         # Structured logging formatter
@@ -48,8 +48,9 @@ Doc/
 │   │   ├── api/client.ts     # Typed API client for FastAPI
 │   │   ├── components/       # Modern responsive components
 │   │   │   ├── Common/       # Skeleton loaders, Empty states, Toast alerts
-│   │   │   ├── Dashboard/    # Metrics overview & ML roadmap view
-│   │   │   ├── Documents/    # Document table, uploader, details modal
+│   │   │   ├── Dashboard/    # Pipeline & HITL review analytics overview
+│   │   │   ├── Documents/    # Document table, uploader, badges, details modal
+│   │   │   ├── Reviews/      # Review Queue & Split-Screen Review Workspace
 │   │   │   └── Layout/       # Sidebar navigation, Header
 │   │   ├── types/            # TypeScript interfaces aligned with Pydantic schemas
 │   │   ├── App.tsx           # Main application state and layout
@@ -59,6 +60,7 @@ Doc/
 │   └── tailwind.config.js
 ├── ml/                       # Extensible ML extraction subsystem
 │   ├── data/                 # Verified SROIE loader, alignment, splitting & validation
+│   ├── feedback/             # Active-learning feedback loader, validator & JSONL exporter
 │   ├── training/             # Shared LayoutLMv3 preprocessing, GPU training & Colab notebook
 │   ├── evaluation/           # Held-out evaluation & scientific model comparison
 │   ├── inference/            # BIO tag decoder & confidence aggregation
@@ -72,7 +74,7 @@ Doc/
 │   └── README.md             # Detailed ML subsystem documentation
 ├── storage/
 │   └── uploads/              # Local storage isolated from web root (safe UUIDs)
-├── tests/                    # Pytest suite (54 unit & integration tests)
+├── tests/                    # Pytest suite (60 unit & integration tests)
 ├── docker-compose.yml        # PostgreSQL 16 container definition
 ├── .env.example              # Documented configuration template
 └── README.md
@@ -163,7 +165,7 @@ Invoke-RestMethod -Uri "http://localhost:8000/api/v1/documents" -Method Post -Fo
 
 ## Running the Automated Test Suite
 
-Run the 32-test automated suite exercising OCR logic, date parsing, financial normalization, PDF conversion, persistence, and error handling:
+Run the full automated pytest suite (60 tests covering upload validation, OCR logic, SROIE data & LayoutLMv3 evaluation safeguards, HITL review workflows, controlled preview security, and active-learning feedback export):
 
 ```bash
 python -m pytest -v tests
@@ -171,38 +173,40 @@ python -m pytest -v tests
 
 ---
 
-## Known OCR Limitations
+## Phase 3A: Human-in-the-Loop Document Review & Active Learning
 
-1. **Physical Receipt Degradation**: Severe physical crumpling, heavy shadows, or faded thermal paper may degrade OCR character recognition.
-2. **Dense Multi-Column Receipts**: Complex column structures without clear delimiters can cause horizontal text merging, best handled by multimodal models (Phase 2B).
-3. **Handwritten Annotations**: Tesseract's standard English model is trained for printed typography; handwriting recognition is limited.
+Phase 3A upgrades DocuMind into a complete document review platform while keeping extraction processing state (`PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`) cleanly separated from human review state (`NOT_REQUIRED`, `PENDING_REVIEW`, `IN_REVIEW`, `APPROVED`, `REJECTED`).
 
----
+### Key Capabilities
+1. **Automatic & Voluntary Review Routing**: Documents are automatically flagged as `PENDING_REVIEW` when heuristic confidence falls below `REVIEW_CONFIDENCE_THRESHOLD` (`0.75`), critical fields (`vendor_name`, `document_date`, `total_amount`) are missing, financial/date integrity warnings occur, or `request_review=true` is passed at upload. High-confidence documents start in `NOT_REQUIRED` and can still be voluntarily reviewed anytime.
+2. **Immutable Original Predictions & Field Diff Audit Trail**:
+   - `ExtractionResult.structured_data` and `raw_text` are never overwritten by human edits.
+   - `DocumentReview`, `FieldCorrection`, and `ReviewAuditEvent` tables (migration `003_add_document_review_tables`) track draft saves, approvals, rejections, reopens, field-level diffs, notes, and optimistic concurrency `version` (`409 Conflict` protection).
+3. **Human Review & Controlled Preview Endpoints**:
+   - `GET /api/v1/reviews` & `GET /api/v1/reviews/metrics` — Review queue filtering/sorting and real DB-backed completion telemetry.
+   - `GET /api/v1/documents/{id}/review`, `PATCH /api/v1/documents/{id}/review`, `POST .../approve`, `POST .../reject`, `POST .../reopen`, `GET .../history`.
+   - `GET /api/v1/documents/{id}/preview/meta` & `GET /api/v1/documents/{id}/file` — Controlled inline preview resolving safe UUID filenames inside `storage/uploads/`, setting `X-Content-Type-Options: nosniff`, and bounding PDF page rasterization (`PREVIEW_MAX_PDF_PAGES=20`).
+4. **Split-Screen Review Workspace & Dashboard UI**:
+   - **Review Queue** tab prioritized by lowest heuristic confidence, missing fields, engine, and status.
+   - **Review Workspace**: side-by-side zoomed/paginated receipt preview + copyable OCR text vs. editable Decimal/ISO-validated fields, original prediction captions, unsaved-change protection, and chronological audit timeline.
+5. **Active-Learning Feedback JSONL Export (`ml/feedback/`)**:
+   - Exports **only `APPROVED`** human-verified records (strictly excluding `REJECTED`, `PENDING_REVIEW`, `IN_REVIEW`, duplicates by SHA-256, and held-out `test.jsonl`/`validation.jsonl` overlaps).
+   - Never launches automatic model retraining; flags samples conservatively as `ALIGNED_CONFIDENT` vs `NEEDS_MANUAL_ANNOTATION` (`ml/feedback/feedback_quality.py`).
 
-## Phase 2B: SROIE Benchmark & LayoutLMv3 Multimodal System
-
-Phase 2B introduces deep learning multimodal extraction using Microsoft's `layoutlmv3-base`:
-1. **SROIE Dataset Pipeline (`ml/data/`)**: Canonical 9-label BIO scheme (`O`, `B-COMPANY`, `I-COMPANY`, `B-DATE`, `I-DATE`, `B-ADDRESS`, `I-ADDRESS`, `B-TOTAL`, `I-TOTAL`), annotation alignment with bounding box validation in `[0, 1000]`, reproducible seeded train/val/test splits, and zero cross-split data leakage detection.
-2. **LayoutLMv3 Training Pipeline (`ml/training/`)**: PyTorch `Dataset` with subword `-100` loss masking, 224x224 RGB image normalization, AdamW optimization, linear warmup, checkpointing based on validation F1, and a fast `--smoke-test` verification mode.
-3. **Evaluation & Comparative Benchmark (`ml/evaluation/`)**: Strict IOB2 entity metrics via `seqeval`, field-level and document-level exact match rates, latency and footprint analysis, and side-by-side benchmark comparison reporting against the Phase 2A baseline (`benchmark_comparison.md`).
-4. **FastAPI & UI Integration**: `LayoutLMv3Extractor` cleanly integrates into the backend service and React dashboard, validating checkpoints and returning structured JSON with confidence scores.
-
-### Quick Start Commands for Phase 2B
 ```bash
-# 1. Prepare SROIE Dataset
-python -m ml.data.prepare_dataset --output-dir data/sroie_processed --seed 42
-
-# 2. Run Local Smoke Test
-python -m ml.training.train_layoutlmv3 --smoke-test --epochs 1 --batch-size 2
-
-# 3. Run Benchmark Comparison
-python -m ml.evaluation.compare_models --test-jsonl data/sroie_processed/test.jsonl
+# Export verified APPROVED reviews to JSONL feedback dataset:
+python -m ml.feedback.export_annotations \
+    --output-dir data/feedback_exports \
+    --reference-splits data/sroie_processed/test.jsonl data/sroie_processed/validation.jsonl
 ```
 
+> [!WARNING]
+> **Security & Privacy Limitation (Local Development Mode)**: Authentication and user sessions are intentionally omitted in Phase 3A local mode. Review edits and audit events default to `DEFAULT_REVIEWER_ID=local-anonymous`, and controlled preview routes do not require bearer credentials. **Do not deploy this build onto an untrusted network or store sensitive financial/PII documents without adding authentication, RBAC, TLS, and access-controlled object storage.**
+
 ---
 
-## Phase 3 Roadmap: Production Serving & Active Learning
+## Phase 3B Roadmap: Verified Retraining & Edge Inference
 
-1. **Active Learning Feedback Loop**: User manual corrections in the frontend dashboard feed back into an automated retraining queue.
-2. **ONNX Runtime / TensorRT Optimization**: Quantize LayoutLMv3 to INT8 for sub-30ms CPU/edge latency.
-3. **Multi-Page Invoice Tabular Understanding**: Integrate Table Transformer or LayoutLMv3 relation extraction for full itemized line-item extraction.
+1. **Human-Reviewed Bio Token Verification & Fine-Tuning**: Promote `ALIGNED_CONFIDENT` (and manually verified `NEEDS_MANUAL_ANNOTATION`) JSONL records into scheduled LayoutLMv3 fine-tuning experiments tracked against held-out SROIE baselines.
+2. **Authentication & Multi-Reviewer RBAC**: Replace `local-anonymous` attribution with authenticated reviewer identities and tenant isolation.
+3. **ONNX Runtime / Multi-Page Itemization**: Quantize LayoutLMv3 for fast CPU inference and structured line-item relation extraction.
