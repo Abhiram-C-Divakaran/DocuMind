@@ -110,3 +110,16 @@ class RateLimitExceededError(DocuMindException):
             error_code="RATE_LIMIT_EXCEEDED",
         )
 
+
+class ServiceUnavailableError(DocuMindException):
+    def __init__(
+        self,
+        detail: str = "Required backing service is temporarily unavailable.",
+        error_code: str = "SERVICE_UNAVAILABLE",
+    ):
+        super().__init__(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=detail,
+            error_code=error_code,
+        )
+

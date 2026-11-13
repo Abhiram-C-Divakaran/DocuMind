@@ -444,6 +444,41 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
     );
   };
 
+  useEffect(() => {
+    if (!previewMeta) return;
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    apiClient
+      .fetchDocumentPreviewBlobUrl(documentId, previewMeta.is_pdf ? currentPage : undefined)
+      .then((blobUrl) => {
+        if (cancelled) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        createdUrl = blobUrl;
+        setPreviewBlobUrl(blobUrl);
+        setPreviewLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setPreviewBlobUrl(null);
+        setPreviewLoading(false);
+        setPreviewError(
+          err instanceof Error ? err.message : 'Could not load authenticated document preview.'
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
+    };
+  }, [documentId, previewMeta, currentPage]);
+
   if (loading) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-sm space-y-4 animate-pulse">
@@ -485,41 +520,6 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
   const maxPreviewPages = previewMeta
     ? Math.min(previewMeta.total_pages, previewMeta.max_preview_pages)
     : 1;
-
-  useEffect(() => {
-    if (!previewMeta) return;
-    let cancelled = false;
-    let createdUrl: string | null = null;
-    setPreviewLoading(true);
-    setPreviewError(null);
-
-    apiClient
-      .fetchDocumentPreviewBlobUrl(documentId, previewMeta.is_pdf ? currentPage : undefined)
-      .then((blobUrl) => {
-        if (cancelled) {
-          URL.revokeObjectURL(blobUrl);
-          return;
-        }
-        createdUrl = blobUrl;
-        setPreviewBlobUrl(blobUrl);
-        setPreviewLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setPreviewBlobUrl(null);
-        setPreviewLoading(false);
-        setPreviewError(
-          err instanceof Error ? err.message : 'Could not load authenticated document preview.'
-        );
-      });
-
-    return () => {
-      cancelled = true;
-      if (createdUrl) {
-        URL.revokeObjectURL(createdUrl);
-      }
-    };
-  }, [documentId, previewMeta, currentPage]);
 
   return (
     <div className="space-y-4">
@@ -821,9 +821,9 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
             <Info className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
             <div>
               <span className="font-semibold text-slate-800">
-                Local Review Mode (anonymous attribution):
+                Authenticated Audit Provenance:
               </span>{' '}
-              Authentication is disabled in local development; actions are attributed to{' '}
+              Review edits, draft saves, and final decisions are permanently attributed to{' '}
               <code className="bg-slate-200/70 px-1 rounded">{review.reviewer_identifier}</code>.
               Original extraction output remains immutable alongside your verified corrections.
             </div>

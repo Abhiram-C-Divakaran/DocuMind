@@ -10,15 +10,19 @@ import {
   Loader2,
 } from 'lucide-react';
 import { apiClient } from '../../api/client';
-import { ProcessingJobMetrics, User, UserRole } from '../../types';
+import { HealthStatus, ProcessingJobMetrics, User, UserRole } from '../../types';
 
 interface UserManagementViewProps {
   currentUser: User;
+  health?: HealthStatus | null;
+  onRefreshHealth?: () => Promise<void> | void;
   onToast: (type: 'success' | 'error' | 'info', msg: string) => void;
 }
 
 export const UserManagementView: React.FC<UserManagementViewProps> = ({
   currentUser,
+  health = null,
+  onRefreshHealth,
   onToast,
 }) => {
   const [users, setUsers] = useState<User[]>([]);
@@ -40,6 +44,9 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
       ]);
       setUsers(usersRes.items);
       setJobMetrics(metricsRes);
+      if (onRefreshHealth) {
+        await onRefreshHealth();
+      }
     } catch (err: unknown) {
       onToast('error', err instanceof Error ? err.message : 'Failed to load admin console data.');
     } finally {
@@ -121,6 +128,13 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={loadData}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Refresh Telemetry
+            </button>
+            <button
               onClick={handleRecoverJobs}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-200 transition-colors"
             >
@@ -137,17 +151,75 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
           </div>
         </div>
 
+        {/* Live System Readiness Strip (real DB / Redis / Worker / OCR / ML checks) */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
+          <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 flex items-center justify-between">
+            <span className="text-slate-500">Database</span>
+            <span className={`font-semibold ${health?.database === 'connected' ? 'text-emerald-700' : 'text-rose-700'}`}>
+              {health?.database ?? 'unknown'}
+            </span>
+          </div>
+          <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 flex items-center justify-between">
+            <span className="text-slate-500">Redis Broker</span>
+            <span className={`font-semibold ${health?.redis === 'connected' ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {health?.redis ?? 'unknown'}
+            </span>
+          </div>
+          <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 flex items-center justify-between">
+            <span className="text-slate-500">Celery Worker</span>
+            <span
+              className={`font-semibold ${
+                health?.worker === 'available'
+                  ? 'text-emerald-700'
+                  : health?.worker === 'unknown'
+                  ? 'text-amber-700'
+                  : 'text-rose-700'
+              }`}
+            >
+              {health?.worker ?? 'unknown'}
+            </span>
+          </div>
+          <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 flex items-center justify-between">
+            <span className="text-slate-500">Tesseract OCR</span>
+            <span className={`font-semibold ${health?.tesseract_available ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {health ? (health.tesseract_available ? 'ready' : 'unavailable') : 'unknown'}
+            </span>
+          </div>
+          <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 flex items-center justify-between">
+            <span className="text-slate-500">LayoutLMv3</span>
+            <span
+              className={`font-semibold ${
+                health?.layoutlmv3_is_production_ready
+                  ? 'text-emerald-700'
+                  : health?.layoutlmv3_ready
+                  ? 'text-amber-700'
+                  : 'text-slate-600'
+              }`}
+            >
+              {health
+                ? health.layoutlmv3_is_production_ready
+                  ? 'ready'
+                  : health.layoutlmv3_ready
+                  ? 'smoke-only'
+                  : 'unavailable'
+                : 'unknown'}
+            </span>
+          </div>
+        </div>
+
         {jobMetrics && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 text-xs">
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
               <div className="text-slate-500">Total Jobs</div>
               <div className="text-lg font-bold text-slate-900">{jobMetrics.total_jobs}</div>
             </div>
             <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
-              <div className="text-amber-700">Queued / Retrying</div>
-              <div className="text-lg font-bold text-amber-900">
-                {jobMetrics.queued + jobMetrics.retrying}
-              </div>
+              <div className="text-amber-700">Queued</div>
+              <div className="text-lg font-bold text-amber-900">{jobMetrics.queued}</div>
+            </div>
+            <div className="p-3 bg-orange-50 rounded-lg border border-orange-200">
+              <div className="text-orange-700">Retrying</div>
+              <div className="text-lg font-bold text-orange-900">{jobMetrics.retrying}</div>
             </div>
             <div className="p-3 bg-sky-50 rounded-lg border border-sky-200">
               <div className="text-sky-700">Processing</div>
@@ -158,15 +230,23 @@ export const UserManagementView: React.FC<UserManagementViewProps> = ({
               <div className="text-lg font-bold text-emerald-900">{jobMetrics.completed}</div>
             </div>
             <div className="p-3 bg-rose-50 rounded-lg border border-rose-200">
-              <div className="text-rose-700">Failed / Cancelled</div>
+              <div className="text-rose-700">Failed / Canc.</div>
               <div className="text-lg font-bold text-rose-900">
                 {jobMetrics.failed + jobMetrics.cancelled}
               </div>
             </div>
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <div className="text-slate-500">Pending Outbox</div>
+              <div className="text-slate-500">Avg Duration</div>
               <div className="text-lg font-bold text-slate-900">
-                {jobMetrics.unpublished_outbox_events}
+                {jobMetrics.average_duration_seconds != null
+                  ? `${jobMetrics.average_duration_seconds.toFixed(2)}s`
+                  : '—'}
+              </div>
+            </div>
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+              <div className="text-slate-500">Outbox / Stale</div>
+              <div className="text-lg font-bold text-slate-900">
+                {jobMetrics.unpublished_outbox_events} / {jobMetrics.stale_running_jobs}
               </div>
             </div>
           </div>

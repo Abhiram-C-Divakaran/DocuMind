@@ -5,6 +5,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.config import settings
 from backend.app.core.exceptions import AuthenticationError, PermissionDeniedError
 from backend.app.core.security import decode_token
 from backend.app.database import get_db
@@ -16,9 +17,20 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """
+    Resolves client IP safely. Proxy headers (X-Real-IP / X-Forwarded-For) are ignored
+    unless TRUST_PROXY_HEADERS=true (explicit reverse-proxy deployment mode) to prevent
+    trivial X-Forwarded-For rate-limit spoofing.
+    """
+    if settings.TRUST_PROXY_HEADERS:
+        real_ip = (request.headers.get("X-Real-IP") or "").strip()
+        if real_ip:
+            return real_ip
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            hops = [part.strip() for part in forwarded.split(",") if part.strip()]
+            if hops:
+                return hops[-1]
     if request.client and request.client.host:
         return request.client.host
     return "unknown"

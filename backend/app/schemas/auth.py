@@ -35,7 +35,7 @@ class RegisterViewerRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str = Field(..., min_length=10)
+    refresh_token: Optional[str] = Field(default=None, min_length=10)
 
 
 class LogoutRequest(BaseModel):
@@ -81,7 +81,7 @@ class UserListResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     expires_in: int
     user: UserResponse

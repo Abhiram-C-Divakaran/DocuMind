@@ -41,24 +41,31 @@ class ApiClient {
     if (this.refreshPromise) {
       return this.refreshPromise;
     }
-    const refreshToken = authStorage.getRefreshToken();
-    if (!refreshToken) {
-      return false;
-    }
 
     this.refreshPromise = (async () => {
       try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-Auth-Transport': 'cookie',
+        };
+        const csrfToken = authStorage.getCsrfToken();
+        if (!csrfToken) {
+          return false;
+        }
+        headers['X-CSRF-Token'] = csrfToken;
+
         const res = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: refreshToken }),
+          credentials: 'include',
+          headers,
+          body: JSON.stringify({}),
         });
         if (!res.ok) {
           authStorage.clear();
           return false;
         }
         const tokens: TokenResponse = await res.json();
-        authStorage.setTokens(tokens.access_token, tokens.refresh_token);
+        authStorage.setAccessToken(tokens.access_token);
         return true;
       } catch {
         return false;
@@ -70,6 +77,27 @@ class ApiClient {
     return this.refreshPromise;
   }
 
+  async restoreSession(): Promise<User | null> {
+    if (authStorage.getAccessToken()) {
+      try {
+        return await this.getMe();
+      } catch {
+        authStorage.clear();
+        return null;
+      }
+    }
+    const refreshed = await this.tryRefreshSession();
+    if (!refreshed) {
+      return null;
+    }
+    try {
+      return await this.getMe();
+    } catch {
+      authStorage.clear();
+      return null;
+    }
+  }
+
   private async authFetch(input: string, init: RequestInit = {}, retryOn401 = true): Promise<Response> {
     const headers = new Headers(init.headers || {});
     const token = authStorage.getAccessToken();
@@ -77,7 +105,7 @@ class ApiClient {
       headers.set('Authorization', `Bearer ${token}`);
     }
 
-    const res = await fetch(input, { ...init, headers });
+    const res = await fetch(input, { ...init, headers, credentials: 'include' });
     if (res.status === 401 && retryOn401) {
       const refreshed = await this.tryRefreshSession();
       if (refreshed) {
@@ -132,26 +160,34 @@ class ApiClient {
   async login(email: string, password: string): Promise<TokenResponse> {
     const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Auth-Transport': 'cookie',
+      },
       body: JSON.stringify({ email, password }),
     });
     const tokens = await this.handleResponse<TokenResponse>(res);
-    authStorage.setTokens(tokens.access_token, tokens.refresh_token);
+    authStorage.setAccessToken(tokens.access_token);
     return tokens;
   }
 
   async logout(): Promise<void> {
-    const refreshToken = authStorage.getRefreshToken();
     try {
       if (authStorage.getAccessToken()) {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const csrfToken = authStorage.getCsrfToken();
+        if (csrfToken) {
+          headers['X-CSRF-Token'] = csrfToken;
+        }
         await this.authFetch(
           `${API_BASE}/api/v1/auth/logout`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refresh_token: refreshToken }),
+            headers,
+            body: JSON.stringify({}),
           },
-          false
+          true
         );
       }
     } finally {

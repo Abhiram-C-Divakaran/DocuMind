@@ -1,20 +1,26 @@
-const ACCESS_TOKEN_KEY = 'documind_access_token';
-const REFRESH_TOKEN_KEY = 'documind_refresh_token';
+const CSRF_COOKIE_NAME = 'documind_csrf_token';
+
+let inMemoryAccessToken: string | null = null;
 
 export const authStorage = {
   getAccessToken(): string | null {
-    return window.sessionStorage.getItem(ACCESS_TOKEN_KEY);
+    return inMemoryAccessToken;
   },
-  getRefreshToken(): string | null {
-    return window.sessionStorage.getItem(REFRESH_TOKEN_KEY);
+  setAccessToken(accessToken: string | null): void {
+    inMemoryAccessToken = accessToken;
   },
-  setTokens(accessToken: string, refreshToken: string): void {
-    window.sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-    window.sessionStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+  getCsrfToken(): string | null {
+    const prefix = `${CSRF_COOKIE_NAME}=`;
+    const parts = document.cookie ? document.cookie.split('; ') : [];
+    for (const part of parts) {
+      if (part.startsWith(prefix)) {
+        return decodeURIComponent(part.slice(prefix.length));
+      }
+    }
+    return null;
   },
   clear(): void {
-    window.sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-    window.sessionStorage.removeItem(REFRESH_TOKEN_KEY);
+    inMemoryAccessToken = null;
   },
 };
 

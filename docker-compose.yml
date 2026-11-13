@@ -46,6 +46,7 @@ services:
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/1
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_only_local_jwt_secret_key_change_in_prod_32chars}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       UPLOAD_DIR: /app/storage/uploads
       LAYOUTLMV3_CHECKPOINT_DIR: /app/checkpoints/${LAYOUTLMV3_CHECKPOINT_NAME:-layoutlmv3-sroie-best}
     ports:
@@ -77,6 +78,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
+    stop_grace_period: 60s
     command: ["celery", "-A", "backend.app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -154,7 +156,7 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/nginx-health || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 3

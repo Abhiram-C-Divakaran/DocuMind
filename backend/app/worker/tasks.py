@@ -303,12 +303,33 @@ def execute_processing_job_sync(
         }
 
     except Exception as exc:
-        session.rollback()
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        if owns_session:
+            from sqlalchemy.exc import DBAPIError
+
+            if isinstance(exc, DBAPIError):
+                try:
+                    session.close()
+                except Exception:
+                    pass
+                session = get_sync_session()
+
         duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-        job = session.get(ProcessingJob, job_id)
-        doc = session.get(Document, job.document_id) if job else None
+        try:
+            job = session.get(ProcessingJob, job_id)
+            doc = session.get(Document, job.document_id) if job else None
+        except Exception:
+            if owns_session:
+                session.close()
+                session = get_sync_session()
+            job = session.get(ProcessingJob, job_id)
+            doc = session.get(Document, job.document_id) if job else None
+
         safe_msg = _sanitize_worker_error(exc)
-        err_cat = type(exc).__name__
+        err_cat = "WORKER_SOFT_TIMEOUT" if "SoftTimeLimitExceeded" in type(exc).__name__ else type(exc).__name__
 
         if job is not None and job.status != JobStatus.CANCELLED.value:
             now = datetime.now(timezone.utc)

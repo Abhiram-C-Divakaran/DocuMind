@@ -32,9 +32,9 @@ def _check_worker_status() -> str:
 
         insp = celery_app.control.inspect(timeout=0.5)
         pong = insp.ping() if insp else None
-        return "available" if pong else "unavailable"
+        return "available" if pong else "unknown"
     except Exception:
-        return "unavailable"
+        return "unknown"
 
 
 @router.get("/health", status_code=status.HTTP_200_OK)
@@ -47,7 +47,7 @@ async def health_check(db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
         db_status = "disconnected"
 
     redis_status = _check_redis_status()
-    worker_status = _check_worker_status() if redis_status == "connected" else "unavailable"
+    worker_status = _check_worker_status() if redis_status == "connected" else "unknown"
     tess_ok, _, _ = get_tesseract_status()
     lm_info = get_cached_layoutlmv3_extractor().get_readiness_info()
 

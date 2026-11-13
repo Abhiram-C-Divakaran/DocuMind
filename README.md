@@ -2,7 +2,17 @@
 
 DocuMind is a production-oriented multimodal document intelligence platform designed to ingest scanned receipts and invoices, validate binary file integrity, perform high-resolution OCR, extract structured tabular and entity data, and maintain an immutable processing ledger.
 
-**Current Release**: **Phase 4A (Asynchronous Celery + Redis Pipeline, Argon2/JWT RBAC Security, Hardened Docker Compose & Observability)** — *Note: see [`MODEL_CARD.md`](MODEL_CARD.md) for LayoutLMv3 checkpoint readiness and Google Colab GPU training instructions.*
+**Current Release**: **Phase 4B (Verified E2E Workflow, Hardened Cookie/CSRF Security, Fail-Closed Rate Limiting, CI/CD & Production Operations)** — *Note: see [`MODEL_CARD.md`](MODEL_CARD.md) for LayoutLMv3 checkpoint readiness and Google Colab GPU training instructions, and [`RELEASE_READINESS.md`](RELEASE_READINESS.md) for verified check statuses.*
+
+---
+
+## Documentation, Screenshots & Verification Suite
+
+- **[`RELEASE_READINESS.md`](RELEASE_READINESS.md)**: Structured verification status (`PASS` / `BLOCKED` / `NOT_TESTED`) and Google Colab ML training checklist.
+- **[`docs/DEMO.md`](docs/DEMO.md)**: Step-by-step reproducible portfolio demo with captured E2E screenshots (`docs/screenshots/01_login.png`–`06_admin_jobs_ops.png`).
+- **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)**: Production VPS/Docker setup, HTTPS TLS reverse proxy config, `pg_dump`/`pg_restore` backup & recovery runbook.
+- **[`docs/SECURITY.md`](docs/SECURITY.md)**: Authentication, HttpOnly+CSRF refresh cookies, RBAC isolation, fail-closed rate limiting, and upload/preview controls.
+- **[`docs/TESTING.md`](docs/TESTING.md)**: Backend pytest, Alembic migrations, frontend build/audit, Playwright E2E, and GitHub Actions CI gates ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ---
 

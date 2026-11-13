@@ -60,7 +60,13 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    REFRESH_COOKIE_NAME: str = "documind_refresh_token"
+    CSRF_COOKIE_NAME: str = "documind_csrf_token"
+    COOKIE_SAMESITE: str = "lax"
+    COOKIE_SECURE: Optional[bool] = None
     LOGIN_RATE_LIMIT_PER_MINUTE: int = 10
+    RATE_LIMIT_FAIL_CLOSED: Optional[bool] = None
+    TRUST_PROXY_HEADERS: bool = False
     ALLOW_VIEWER_SELF_REGISTRATION: bool = False
     FLOWER_BASIC_AUTH: Optional[str] = None
 
@@ -96,6 +102,16 @@ class Settings(BaseSettings):
     @property
     def max_file_size_bytes(self) -> int:
         return self.MAX_FILE_SIZE_MB * 1024 * 1024
+
+    @property
+    def rate_limit_fail_closed(self) -> bool:
+        if self.RATE_LIMIT_FAIL_CLOSED is not None:
+            return bool(self.RATE_LIMIT_FAIL_CLOSED)
+        return (self.ENVIRONMENT or "development").strip().lower() == "production"
+
+    @property
+    def is_production(self) -> bool:
+        return (self.ENVIRONMENT or "development").strip().lower() == "production"
 
     @property
     def sync_database_url(self) -> str:

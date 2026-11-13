@@ -12,6 +12,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError
 
 from backend.app.config import settings
+from backend.app.core.exceptions import ServiceUnavailableError
 from backend.app.logger import logger
 
 _password_hasher = PasswordHasher(
@@ -99,20 +100,26 @@ def decode_token(token: str, expected_type: Optional[str] = None) -> Dict[str, A
 
 class SlidingWindowRateLimiter:
     """
-    Sliding-window rate limiter using Redis sorted sets when available, with an
-    in-memory thread-safe fallback for single-process development and automated tests.
+    Sliding-window rate limiter using Redis sorted sets when available.
+    - In production (or when RATE_LIMIT_FAIL_CLOSED=true), Redis outages fail closed (HTTP 503)
+      so distributed brute-force protections are never silently downgraded.
+    - In single-process development/tests, falls back to a thread-safe in-memory sliding window.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._buckets: Dict[str, Deque[float]] = defaultdict(deque)
         self._redis_client: Any = None
-        self._redis_checked: bool = False
+        self._last_redis_check: float = 0.0
+        self._redis_retry_interval: float = 5.0
 
     def _get_redis(self) -> Any:
-        if self._redis_checked:
+        now = time.monotonic()
+        if self._redis_client is not None:
             return self._redis_client
-        self._redis_checked = True
+        if (now - self._last_redis_check) < self._redis_retry_interval:
+            return None
+        self._last_redis_check = now
         try:
             import redis
 
@@ -147,7 +154,29 @@ class SlidingWindowRateLimiter:
                     return False, 0
                 return True, max(0, max_requests - int(current_count) - 1)
             except Exception as exc:
-                logger.warning("Redis rate limiter unavailable, using in-memory fallback", extra={"error_category": type(exc).__name__})
+                self._redis_client = None
+                if settings.rate_limit_fail_closed:
+                    logger.error(
+                        "Shared Redis rate limiter failed in fail-closed mode",
+                        extra={"event": "rate_limiter_unavailable", "error_category": type(exc).__name__},
+                    )
+                    raise ServiceUnavailableError(
+                        "Authentication rate limiting service is unavailable. Please retry shortly.",
+                        error_code="RATE_LIMITER_UNAVAILABLE",
+                    ) from exc
+                logger.warning(
+                    "Redis rate limiter unavailable, using in-memory fallback",
+                    extra={"error_category": type(exc).__name__},
+                )
+        elif settings.rate_limit_fail_closed:
+            logger.error(
+                "Shared Redis rate limiter unreachable in fail-closed mode",
+                extra={"event": "rate_limiter_unavailable"},
+            )
+            raise ServiceUnavailableError(
+                "Authentication rate limiting service is unavailable. Please retry shortly.",
+                error_code="RATE_LIMITER_UNAVAILABLE",
+            )
 
         cutoff = now - window_seconds
         with self._lock:

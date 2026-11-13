@@ -73,13 +73,8 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     let active = true;
-    const token = authStorage.getAccessToken();
-    if (!token) {
-      setCheckingAuth(false);
-      return;
-    }
     apiClient
-      .getMe()
+      .restoreSession()
       .then((user) => {
         if (active) setCurrentUser(user);
       })
@@ -438,6 +433,8 @@ export const App: React.FC = () => {
             <div className="max-w-7xl mx-auto">
               <UserManagementView
                 currentUser={currentUser}
+                health={health}
+                onRefreshHealth={loadHealth}
                 onToast={(type, msg) => showToast(type, msg)}
               />
             </div>
