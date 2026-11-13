@@ -28,5 +28,6 @@ class ModelReadinessResponse(BaseModel):
     checkpoint_identity: Optional[str] = None
     checkpoint_size_mb: Optional[float] = None
     checkpoint_metadata: Optional[Dict[str, Any]] = None
+    worker_available: Optional[bool] = None
     methods: List[ExtractionMethodReadiness]
 

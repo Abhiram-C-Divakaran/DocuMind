@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.config import settings
-from backend.app.core.exceptions import ConflictError, DocumentNotFoundError, FileValidationError
+from backend.app.core.exceptions import ConflictError, DocumentNotFoundError, FileValidationError, PermissionDeniedError
 from backend.app.logger import logger
 from backend.app.models.document import Document, DocumentStatus
 from backend.app.models.extraction import ExtractionResult
@@ -17,6 +17,7 @@ from backend.app.models.review import (
     ReviewAuditEvent,
     ReviewStatus,
 )
+from backend.app.models.user import User, UserRole
 from backend.app.schemas.review import (
     DocumentReviewResponse,
     FieldCorrectionResponse,
@@ -270,9 +271,12 @@ class ReviewService:
         return document, latest_extraction, document.review
 
     async def _ensure_review_record(
-        self, db: AsyncSession, document_id: str
+        self, db: AsyncSession, document_id: str, user: Optional[User] = None
     ) -> Tuple[Document, Optional[ExtractionResult], DocumentReview]:
         document, latest_extraction, review = await self._load_document_with_review(db, document_id)
+        if user is not None and user.role != UserRole.ADMIN.value:
+            if document.owner_id is None or document.owner_id != user.id:
+                raise PermissionDeniedError("You do not have access to this document.")
         if review is not None:
             return document, latest_extraction, review
 
@@ -423,9 +427,9 @@ class ReviewService:
         return edited_in_this_step
 
     async def get_document_review(
-        self, db: AsyncSession, document_id: str
+        self, db: AsyncSession, document_id: str, user: Optional[User] = None
     ) -> DocumentReviewResponse:
-        document, extraction, review = await self._ensure_review_record(db, document_id)
+        document, extraction, review = await self._ensure_review_record(db, document_id, user=user)
         return self._build_review_response(document, extraction, review)
 
     async def save_review_draft(
@@ -433,8 +437,9 @@ class ReviewService:
         db: AsyncSession,
         document_id: str,
         payload: ReviewUpdateRequest,
+        user: Optional[User] = None,
     ) -> DocumentReviewResponse:
-        document, extraction, review = await self._ensure_review_record(db, document_id)
+        document, extraction, review = await self._ensure_review_record(db, document_id, user=user)
         self._check_expected_version(payload.expected_version, review.version)
 
         prev_status = review.review_status
@@ -458,7 +463,7 @@ class ReviewService:
             new_data_dict,
         )
 
-        actor = (payload.reviewer_identifier or "").strip() or settings.DEFAULT_REVIEWER_ID
+        actor = (payload.reviewer_identifier or "").strip() or (user.email if user else settings.DEFAULT_REVIEWER_ID)
         now = datetime.now(timezone.utc)
 
         await self._atomic_version_bump(
@@ -495,8 +500,9 @@ class ReviewService:
         db: AsyncSession,
         document_id: str,
         payload: ReviewDecisionRequest,
+        user: Optional[User] = None,
     ) -> DocumentReviewResponse:
-        document, extraction, review = await self._ensure_review_record(db, document_id)
+        document, extraction, review = await self._ensure_review_record(db, document_id, user=user)
         self._check_expected_version(payload.expected_version, review.version)
 
         prev_status = review.review_status
@@ -539,7 +545,7 @@ class ReviewService:
             effective_data,
         )
 
-        actor = (payload.reviewer_identifier or "").strip() or settings.DEFAULT_REVIEWER_ID
+        actor = (payload.reviewer_identifier or "").strip() or (user.email if user else settings.DEFAULT_REVIEWER_ID)
         now = datetime.now(timezone.utc)
 
         await self._atomic_version_bump(
@@ -576,8 +582,9 @@ class ReviewService:
         db: AsyncSession,
         document_id: str,
         payload: ReviewDecisionRequest,
+        user: Optional[User] = None,
     ) -> DocumentReviewResponse:
-        document, extraction, review = await self._ensure_review_record(db, document_id)
+        document, extraction, review = await self._ensure_review_record(db, document_id, user=user)
         self._check_expected_version(payload.expected_version, review.version)
 
         prev_status = review.review_status
@@ -603,7 +610,7 @@ class ReviewService:
                 new_data_dict,
             )
 
-        actor = (payload.reviewer_identifier or "").strip() or settings.DEFAULT_REVIEWER_ID
+        actor = (payload.reviewer_identifier or "").strip() or (user.email if user else settings.DEFAULT_REVIEWER_ID)
         now = datetime.now(timezone.utc)
 
         await self._atomic_version_bump(
@@ -640,14 +647,15 @@ class ReviewService:
         db: AsyncSession,
         document_id: str,
         payload: ReviewDecisionRequest,
+        user: Optional[User] = None,
     ) -> DocumentReviewResponse:
-        document, extraction, review = await self._ensure_review_record(db, document_id)
+        document, extraction, review = await self._ensure_review_record(db, document_id, user=user)
         self._check_expected_version(payload.expected_version, review.version)
 
         prev_status = review.review_status
         self._validate_transition(prev_status, ReviewStatus.IN_REVIEW.value)
 
-        actor = (payload.reviewer_identifier or "").strip() or settings.DEFAULT_REVIEWER_ID
+        actor = (payload.reviewer_identifier or "").strip() or (user.email if user else settings.DEFAULT_REVIEWER_ID)
         now = datetime.now(timezone.utc)
 
         await self._atomic_version_bump(
@@ -678,9 +686,9 @@ class ReviewService:
         return self._build_review_response(document, extraction, refreshed_review)  # type: ignore[arg-type]
 
     async def get_review_history(
-        self, db: AsyncSession, document_id: str
+        self, db: AsyncSession, document_id: str, user: Optional[User] = None
     ) -> ReviewHistoryResponse:
-        document, _, review = await self._ensure_review_record(db, document_id)
+        document, _, review = await self._ensure_review_record(db, document_id, user=user)
         return ReviewHistoryResponse(
             document_id=document.id,
             review_id=review.id,
@@ -704,6 +712,7 @@ class ReviewService:
         missing_field: Optional[str] = None,
         search: Optional[str] = None,
         sort_by: str = "confidence_asc",
+        user: Optional[User] = None,
     ) -> ReviewListResponse:
         query = (
             select(Document)
@@ -713,6 +722,8 @@ class ReviewService:
             )
             .order_by(desc(Document.created_at))
         )
+        if user is not None and user.role != UserRole.ADMIN.value:
+            query = query.where(Document.owner_id == user.id)
         docs = list((await db.execute(query)).scalars().all())
 
         status_filter = review_status.upper().strip() if review_status else None
@@ -810,10 +821,11 @@ class ReviewService:
             page_size=page_size,
         )
 
-    async def get_review_metrics(self, db: AsyncSession) -> ReviewMetricsResponse:
-        docs_res = await db.execute(
-            select(Document).options(selectinload(Document.review), selectinload(Document.extractions))
-        )
+    async def get_review_metrics(self, db: AsyncSession, user: Optional[User] = None) -> ReviewMetricsResponse:
+        stmt = select(Document).options(selectinload(Document.review), selectinload(Document.extractions))
+        if user is not None and user.role != UserRole.ADMIN.value:
+            stmt = stmt.where(Document.owner_id == user.id)
+        docs_res = await db.execute(stmt)
         docs = list(docs_res.scalars().all())
 
         counts = {

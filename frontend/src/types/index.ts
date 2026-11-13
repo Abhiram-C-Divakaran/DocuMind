@@ -1,3 +1,69 @@
+export type UserRole = 'ADMIN' | 'REVIEWER' | 'VIEWER';
+
+export interface User {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  role: UserRole;
+  is_active: boolean;
+  last_login_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+  user: User;
+}
+
+export type JobStatus = 'QUEUED' | 'PROCESSING' | 'RETRYING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+export interface ProcessingJob {
+  id: string;
+  document_id: string;
+  task_id?: string | null;
+  idempotency_key: string;
+  extraction_method: string;
+  status: JobStatus;
+  attempts: number;
+  max_attempts: number;
+  request_review: boolean;
+  started_at?: string | null;
+  completed_at?: string | null;
+  heartbeat_at?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentStatusResponse {
+  document_id: string;
+  document_status: DocumentStatus;
+  review_status: ReviewStatus;
+  needs_review: boolean;
+  error_message?: string | null;
+  latest_job?: ProcessingJob | null;
+  jobs: ProcessingJob[];
+}
+
+export interface ProcessingJobMetrics {
+  total_jobs: number;
+  queued: number;
+  processing: number;
+  retrying: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  stale_running_jobs: number;
+  unpublished_outbox_events: number;
+  average_duration_seconds?: number | null;
+  by_extraction_method: Record<string, number>;
+}
+
 export type DocumentStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
 
 export type ReviewStatus =
@@ -42,6 +108,7 @@ export interface ExtractionResult {
 
 export interface DocumentItem {
   id: string;
+  owner_id?: string | null;
   original_filename: string;
   content_type: string;
   file_size_bytes: number;
@@ -53,6 +120,7 @@ export interface DocumentItem {
   created_at: string;
   updated_at: string;
   extractions: ExtractionResult[];
+  latest_job?: ProcessingJob | null;
 }
 
 export interface DocumentListResponse {
@@ -64,6 +132,7 @@ export interface DocumentListResponse {
 
 export interface DocumentUploadResponse {
   document: DocumentItem;
+  job?: ProcessingJob | null;
   message: string;
 }
 
@@ -78,13 +147,19 @@ export interface DashboardMetrics {
 export interface HealthStatus {
   status: string;
   service: string;
-  environment: string;
-  timestamp: string;
-  components: {
+  environment?: string;
+  timestamp?: string;
+  database?: string;
+  redis?: string;
+  worker?: string;
+  tesseract_available?: boolean;
+  layoutlmv3_ready?: boolean;
+  layoutlmv3_is_production_ready?: boolean;
+  components?: {
     database: string;
     storage: string;
   };
-  phase: number | string;
+  phase?: number | string;
 }
 
 export interface ApiError {

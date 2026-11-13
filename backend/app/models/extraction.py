@@ -18,6 +18,7 @@ class ExtractionResult(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(String(36), ForeignKey("processing_jobs.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
     extraction_method = Column(String(50), nullable=False, default=ExtractionMethod.TESSERACT_BASELINE.value)
     structured_data = Column(JSON, nullable=True)
     confidence = Column(Float, nullable=True)

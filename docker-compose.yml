@@ -1,24 +1,199 @@
-version: '3.8'
-
 services:
-  db:
+  postgres:
     image: postgres:16-alpine
-    container_name: documind-postgres
-    restart: always
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-documind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-documind_dev_password}
       POSTGRES_DB: ${POSTGRES_DB:-documind}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-documind}"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-documind} -d ${POSTGRES_DB:-documind}"]
+      interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-documind_dev_redis}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-documind_dev_redis} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-false}
+      RUN_MIGRATIONS: "true"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-documind}:${POSTGRES_PASSWORD:-documind_dev_password}@postgres:5432/${POSTGRES_DB:-documind}
+      SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-documind}:${POSTGRES_PASSWORD:-documind_dev_password}@postgres:5432/${POSTGRES_DB:-documind}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/1
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_only_local_jwt_secret_key_change_in_prod_32chars}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      UPLOAD_DIR: /app/storage/uploads
+      LAYOUTLMV3_CHECKPOINT_DIR: /app/checkpoints/${LAYOUTLMV3_CHECKPOINT_NAME:-layoutlmv3-sroie-best}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./checkpoints:/app/checkpoints:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    networks:
+      - internal
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["celery", "-A", "backend.app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DEBUG: ${DEBUG:-false}
+      RUN_MIGRATIONS: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-documind}:${POSTGRES_PASSWORD:-documind_dev_password}@postgres:5432/${POSTGRES_DB:-documind}
+      SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-documind}:${POSTGRES_PASSWORD:-documind_dev_password}@postgres:5432/${POSTGRES_DB:-documind}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/1
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_only_local_jwt_secret_key_change_in_prod_32chars}
+      UPLOAD_DIR: /app/storage/uploads
+      LAYOUTLMV3_CHECKPOINT_DIR: /app/checkpoints/${LAYOUTLMV3_CHECKPOINT_NAME:-layoutlmv3-sroie-best}
+      PRELOAD_LAYOUTLMV3_ON_WORKER_START: ${PRELOAD_LAYOUTLMV3_ON_WORKER_START:-false}
+    volumes:
+      - ./storage:/app/storage
+      - ./checkpoints:/app/checkpoints:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.app.worker.celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 25s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    networks:
+      - internal
+
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["celery", "-A", "backend.app.worker.celery_app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      RUN_MIGRATIONS: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-documind}:${POSTGRES_PASSWORD:-documind_dev_password}@postgres:5432/${POSTGRES_DB:-documind}
+      SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-documind}:${POSTGRES_PASSWORD:-documind_dev_password}@postgres:5432/${POSTGRES_DB:-documind}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/1
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_only_local_jwt_secret_key_change_in_prod_32chars}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    networks:
+      - internal
+
+  flower:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    command:
+      - "sh"
+      - "-c"
+      - "exec celery -A backend.app.worker.celery_app flower --port=5555 --basic_auth=$${FLOWER_BASIC_AUTH:?Set FLOWER_BASIC_AUTH=user:password}"
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-documind_dev_redis}@redis:6379/1
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_only_local_jwt_secret_key_change_in_prod_32chars}
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:-admin:change_flower_password}
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
 
 volumes:
   postgres_data:
+  redis_data:
 
+networks:
+  internal:
+    driver: bridge

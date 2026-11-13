@@ -72,3 +72,41 @@ class ReviewNotFoundError(DocuMindException):
             error_code="REVIEW_NOT_FOUND",
             extra={"document_id": document_id},
         )
+
+
+class JobNotFoundError(DocuMindException):
+    def __init__(self, job_id: str):
+        super().__init__(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Processing job '{job_id}' was not found.",
+            error_code="JOB_NOT_FOUND",
+            extra={"job_id": job_id},
+        )
+
+
+class AuthenticationError(DocuMindException):
+    def __init__(self, detail: str = "Authentication required.", error_code: str = "UNAUTHORIZED"):
+        super().__init__(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=detail,
+            error_code=error_code,
+        )
+
+
+class PermissionDeniedError(DocuMindException):
+    def __init__(self, detail: str = "Insufficient permissions for this resource.", error_code: str = "FORBIDDEN"):
+        super().__init__(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=detail,
+            error_code=error_code,
+        )
+
+
+class RateLimitExceededError(DocuMindException):
+    def __init__(self, detail: str = "Too many authentication requests. Please retry later."):
+        super().__init__(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+            error_code="RATE_LIMIT_EXCEEDED",
+        )
+

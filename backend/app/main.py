@@ -1,26 +1,33 @@
 import time
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.app.api.routes import documents_router, health_router, models_router, reviews_router
+from backend.app.api.routes import (
+    auth_router,
+    documents_router,
+    health_router,
+    jobs_router,
+    models_router,
+    reviews_router,
+)
 from backend.app.config import settings
 from backend.app.core.exceptions import DocuMindException
 from backend.app.database import Base, engine
-from backend.app.logger import logger
+from backend.app.logger import logger, request_id_var
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: ensure database tables exist (convenience for development / testing)
+    settings.validate_runtime_security()
     logger.info("Initializing DocuMind application...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables verified.")
     yield
-    # Shutdown
     logger.info("Shutting down DocuMind application...")
     await engine.dispose()
 
@@ -39,19 +46,36 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 
-# Request timing & structured logging middleware
+# Request ID, security response headers & structured timing middleware
 @app.middleware("http")
 async def logging_middleware(request: Request, call_next):
-    start_time = time.time()
-    response = await call_next(request)
-    duration_ms = (time.time() - start_time) * 1000
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    token = request_id_var.set(req_id)
+    start_time = time.perf_counter()
+    try:
+        response = await call_next(request)
+    finally:
+        duration_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
+        request_id_var.reset(token)
+
+    response.headers["X-Request-ID"] = req_id
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+
     logger.info(
-        f"{request.method} {request.url.path} returned {response.status_code} in {duration_ms:.2f}ms"
+        f"{request.method} {request.url.path} -> {response.status_code}",
+        extra={
+            "event": "http_request",
+            "request_id": req_id,
+            "status": str(response.status_code),
+            "duration_ms": duration_ms,
+        },
     )
     return response
 
@@ -91,14 +115,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled server error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    logger.error(
+        f"Unhandled server error on {request.method} {request.url.path}",
+        extra={"event": "unhandled_exception", "error_category": type(exc).__name__},
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "error": {
                 "code": "INTERNAL_SERVER_ERROR",
                 "message": "An unexpected error occurred processing your request.",
-                "details": {"exception": str(exc)} if settings.DEBUG else {},
+                "details": {},
             }
         },
     )
@@ -106,7 +134,9 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 # Mount routers
 app.include_router(health_router)
+app.include_router(auth_router, prefix=settings.API_V1_STR, tags=["Authentication & Users"])
 app.include_router(documents_router, prefix=settings.API_V1_STR)
+app.include_router(jobs_router, prefix=f"{settings.API_V1_STR}/jobs", tags=["Processing Jobs"])
 app.include_router(models_router, prefix=settings.API_V1_STR)
 app.include_router(reviews_router, prefix=settings.API_V1_STR)
 

@@ -50,20 +50,30 @@ async def _upload_with_mocked_ocr(
     request_review: bool = False,
     output: ExtractionOutput,
 ) -> dict:
+    from backend.app.worker.tasks import execute_processing_job_sync
+
+    data = {"extraction_method": "TESSERACT_BASELINE"}
+    if request_review:
+        data["request_review"] = "true"
+    res = await client.post(
+        "/api/v1/documents",
+        files={"file": (filename, file_bytes, content_type)},
+        data=data,
+    )
+    assert res.status_code == 202, res.text
+    payload = res.json()
+    doc_id = payload["document"]["id"]
+    job_id = payload["job"]["id"]
+
     with patch(
-        "backend.app.services.document_service.TesseractBaselineExtractor.extract",
+        "backend.app.worker.tasks.TesseractBaselineExtractor.extract",
         return_value=output,
     ):
-        data = {"extraction_method": "TESSERACT_BASELINE"}
-        if request_review:
-            data["request_review"] = "true"
-        res = await client.post(
-            "/api/v1/documents",
-            files={"file": (filename, file_bytes, content_type)},
-            data=data,
-        )
-    assert res.status_code == 201, res.text
-    return res.json()["document"]
+        execute_processing_job_sync(job_id)
+
+    doc_res = await client.get(f"/api/v1/documents/{doc_id}")
+    assert doc_res.status_code == 200, doc_res.text
+    return doc_res.json()
 
 
 @pytest.mark.asyncio

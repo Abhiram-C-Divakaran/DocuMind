@@ -14,6 +14,9 @@ import {
   FileCode,
   Calendar,
   ClipboardCheck,
+  RotateCcw,
+  Trash2,
+  Ban,
 } from 'lucide-react';
 
 interface DocumentTableProps {
@@ -29,6 +32,10 @@ interface DocumentTableProps {
   onPageChange: (newPage: number) => void;
   onSelectDocument: (doc: DocumentItem) => void;
   onReviewDocument?: (doc: DocumentItem) => void;
+  onRetryDocument?: (doc: DocumentItem) => void;
+  onCancelDocument?: (doc: DocumentItem) => void;
+  onDeleteDocument?: (doc: DocumentItem) => void;
+  canMutate?: boolean;
   onUploadClick: () => void;
 }
 
@@ -45,6 +52,10 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
   onPageChange,
   onSelectDocument,
   onReviewDocument,
+  onRetryDocument,
+  onCancelDocument,
+  onDeleteDocument,
+  canMutate = true,
   onUploadClick,
 }) => {
   const totalPages = Math.ceil(total / pageSize) || 1;
@@ -199,7 +210,35 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
 
                     <td className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1">
-                        {onReviewDocument && (
+                        {canMutate &&
+                          onCancelDocument &&
+                          (doc.status === 'PENDING' || doc.status === 'PROCESSING') && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onCancelDocument(doc);
+                              }}
+                              title="Cancel processing job"
+                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-semibold text-amber-700 hover:bg-amber-50 transition-colors"
+                            >
+                              <Ban className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        {canMutate &&
+                          onRetryDocument &&
+                          doc.status === 'FAILED' && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRetryDocument(doc);
+                              }}
+                              title="Retry failed job"
+                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-semibold text-sky-700 hover:bg-sky-50 transition-colors"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        {canMutate && onReviewDocument && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -221,6 +260,18 @@ export const DocumentTable: React.FC<DocumentTableProps> = ({
                           <Eye className="w-3.5 h-3.5" />
                           <span>Inspect</span>
                         </button>
+                        {canMutate && onDeleteDocument && doc.status !== 'PROCESSING' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteDocument(doc);
+                            }}
+                            title="Delete document"
+                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-semibold text-rose-600 hover:bg-rose-50 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

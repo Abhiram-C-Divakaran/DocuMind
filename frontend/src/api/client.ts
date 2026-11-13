@@ -3,15 +3,22 @@ import {
   DocumentItem,
   DocumentListResponse,
   DocumentReview,
+  DocumentStatusResponse,
   DocumentUploadResponse,
   HealthStatus,
   ModelReadinessResponse,
   PreviewMeta,
+  ProcessingJob,
+  ProcessingJobMetrics,
   ReviewCorrectionPayload,
   ReviewHistoryResponse,
   ReviewListResponse,
   ReviewMetrics,
+  TokenResponse,
+  User,
+  UserRole,
 } from '../types';
+import { authStorage } from './authStorage';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -23,6 +30,67 @@ export interface ReviewDecisionPayload {
 }
 
 class ApiClient {
+  private refreshPromise: Promise<boolean> | null = null;
+  private onSessionExpired: (() => void) | null = null;
+
+  setSessionExpiredHandler(handler: (() => void) | null): void {
+    this.onSessionExpired = handler;
+  }
+
+  private async tryRefreshSession(): Promise<boolean> {
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+    const refreshToken = authStorage.getRefreshToken();
+    if (!refreshToken) {
+      return false;
+    }
+
+    this.refreshPromise = (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+        if (!res.ok) {
+          authStorage.clear();
+          return false;
+        }
+        const tokens: TokenResponse = await res.json();
+        authStorage.setTokens(tokens.access_token, tokens.refresh_token);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
+  private async authFetch(input: string, init: RequestInit = {}, retryOn401 = true): Promise<Response> {
+    const headers = new Headers(init.headers || {});
+    const token = authStorage.getAccessToken();
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+
+    const res = await fetch(input, { ...init, headers });
+    if (res.status === 401 && retryOn401) {
+      const refreshed = await this.tryRefreshSession();
+      if (refreshed) {
+        return this.authFetch(input, init, false);
+      }
+      authStorage.clear();
+      if (this.onSessionExpired) {
+        this.onSessionExpired();
+      }
+    }
+    return res;
+  }
+
   private async handleResponse<T>(res: Response): Promise<T> {
     if (!res.ok) {
       let errorMsg = `Server error (${res.status})`;
@@ -60,6 +128,74 @@ class ApiClient {
     return res.json();
   }
 
+  // --- Auth & Admin Users ---
+  async login(email: string, password: string): Promise<TokenResponse> {
+    const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const tokens = await this.handleResponse<TokenResponse>(res);
+    authStorage.setTokens(tokens.access_token, tokens.refresh_token);
+    return tokens;
+  }
+
+  async logout(): Promise<void> {
+    const refreshToken = authStorage.getRefreshToken();
+    try {
+      if (authStorage.getAccessToken()) {
+        await this.authFetch(
+          `${API_BASE}/api/v1/auth/logout`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: refreshToken }),
+          },
+          false
+        );
+      }
+    } finally {
+      authStorage.clear();
+    }
+  }
+
+  async getMe(): Promise<User> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/auth/me`);
+    return this.handleResponse<User>(res);
+  }
+
+  async listUsers(): Promise<{ items: User[]; total: number }> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/users`);
+    return this.handleResponse<{ items: User[]; total: number }>(res);
+  }
+
+  async createUser(payload: {
+    email: string;
+    password: string;
+    full_name?: string;
+    role: UserRole;
+  }): Promise<User> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return this.handleResponse<User>(res);
+  }
+
+  async updateUser(
+    userId: string,
+    payload: { full_name?: string; role?: UserRole; is_active?: boolean; password?: string }
+  ): Promise<User> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/users/${encodeURIComponent(userId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return this.handleResponse<User>(res);
+  }
+
+  // --- Health & Readiness ---
   async checkHealth(): Promise<HealthStatus> {
     const res = await fetch(`${API_BASE}/health`);
     return this.handleResponse<HealthStatus>(res);
@@ -70,6 +206,7 @@ class ApiClient {
     return this.handleResponse<ModelReadinessResponse>(res);
   }
 
+  // --- Documents & Async Jobs ---
   async fetchDocuments(params?: {
     page?: number;
     page_size?: number;
@@ -83,18 +220,68 @@ class ApiClient {
     if (params?.search) query.append('search', params.search);
 
     const queryString = query.toString() ? `?${query.toString()}` : '';
-    const res = await fetch(`${API_BASE}/api/v1/documents${queryString}`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents${queryString}`);
     return this.handleResponse<DocumentListResponse>(res);
   }
 
   async fetchDocument(id: string): Promise<DocumentItem> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(id)}`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(id)}`);
     return this.handleResponse<DocumentItem>(res);
   }
 
+  async fetchDocumentStatus(id: string): Promise<DocumentStatusResponse> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(id)}/status`);
+    return this.handleResponse<DocumentStatusResponse>(res);
+  }
+
+  async retryDocument(id: string, extractionMethod?: string): Promise<DocumentUploadResponse> {
+    const formData = new FormData();
+    if (extractionMethod) {
+      formData.append('extraction_method', extractionMethod);
+    }
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(id)}/retry`, {
+      method: 'POST',
+      body: extractionMethod ? formData : undefined,
+    });
+    return this.handleResponse<DocumentUploadResponse>(res);
+  }
+
+  async cancelDocument(id: string): Promise<ProcessingJob> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+    });
+    return this.handleResponse<ProcessingJob>(res);
+  }
+
+  async deleteDocument(id: string): Promise<{ status: string; document_id: string }> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    return this.handleResponse<{ status: string; document_id: string }>(res);
+  }
+
   async fetchMetrics(): Promise<DashboardMetrics> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/metrics/summary`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/metrics/summary`);
     return this.handleResponse<DashboardMetrics>(res);
+  }
+
+  async getJobMetrics(): Promise<ProcessingJobMetrics> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/jobs/metrics`);
+    return this.handleResponse<ProcessingJobMetrics>(res);
+  }
+
+  async triggerJobRecovery(): Promise<{
+    republished_outbox: number;
+    requeued_stale_jobs: number;
+    failed_stale_jobs: number;
+  }> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/jobs/recover`, { method: 'POST' });
+    return this.handleResponse(res);
+  }
+
+  async exportFeedbackAdmin(): Promise<{ exported_count: number }> {
+    const res = await this.authFetch(`${API_BASE}/api/v1/reviews/feedback-export`, { method: 'POST' });
+    return this.handleResponse<{ exported_count: number }>(res);
   }
 
   async uploadDocument(
@@ -111,7 +298,7 @@ class ApiClient {
       formData.append('request_review', 'true');
     }
 
-    const res = await fetch(`${API_BASE}/api/v1/documents`, {
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents`, {
       method: 'POST',
       body: formData,
     });
@@ -119,6 +306,7 @@ class ApiClient {
     return this.handleResponse<DocumentUploadResponse>(res);
   }
 
+  // --- Human-in-the-Loop Reviews ---
   async fetchReviewQueue(params?: {
     page?: number;
     page_size?: number;
@@ -140,17 +328,17 @@ class ApiClient {
     if (params?.sort_by) query.append('sort_by', params.sort_by);
 
     const queryString = query.toString() ? `?${query.toString()}` : '';
-    const res = await fetch(`${API_BASE}/api/v1/reviews${queryString}`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/reviews${queryString}`);
     return this.handleResponse<ReviewListResponse>(res);
   }
 
   async fetchReviewMetrics(): Promise<ReviewMetrics> {
-    const res = await fetch(`${API_BASE}/api/v1/reviews/metrics`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/reviews/metrics`);
     return this.handleResponse<ReviewMetrics>(res);
   }
 
   async fetchDocumentReview(documentId: string): Promise<DocumentReview> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review`);
     return this.handleResponse<DocumentReview>(res);
   }
 
@@ -163,7 +351,7 @@ class ApiClient {
       expected_version?: number | null;
     }
   ): Promise<DocumentReview> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review`, {
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -172,39 +360,48 @@ class ApiClient {
   }
 
   async approveReview(documentId: string, payload?: ReviewDecisionPayload): Promise<DocumentReview> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload ?? {}),
-    });
+    const res = await this.authFetch(
+      `${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/approve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload ?? {}),
+      }
+    );
     return this.handleResponse<DocumentReview>(res);
   }
 
   async rejectReview(documentId: string, payload?: ReviewDecisionPayload): Promise<DocumentReview> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/reject`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload ?? {}),
-    });
+    const res = await this.authFetch(
+      `${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/reject`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload ?? {}),
+      }
+    );
     return this.handleResponse<DocumentReview>(res);
   }
 
   async reopenReview(documentId: string, payload?: ReviewDecisionPayload): Promise<DocumentReview> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/reopen`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload ?? {}),
-    });
+    const res = await this.authFetch(
+      `${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/reopen`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload ?? {}),
+      }
+    );
     return this.handleResponse<DocumentReview>(res);
   }
 
   async fetchReviewHistory(documentId: string): Promise<ReviewHistoryResponse> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/history`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/review/history`);
     return this.handleResponse<ReviewHistoryResponse>(res);
   }
 
   async fetchPreviewMeta(documentId: string): Promise<PreviewMeta> {
-    const res = await fetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/preview/meta`);
+    const res = await this.authFetch(`${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/preview/meta`);
     return this.handleResponse<PreviewMeta>(res);
   }
 
@@ -212,7 +409,15 @@ class ApiClient {
     const base = `${API_BASE}/api/v1/documents/${encodeURIComponent(documentId)}/file`;
     return page !== undefined ? `${base}?page=${page}` : base;
   }
+
+  async fetchDocumentPreviewBlobUrl(documentId: string, page?: number): Promise<string> {
+    const res = await this.authFetch(this.getDocumentPreviewUrl(documentId, page));
+    if (!res.ok) {
+      await this.handleResponse(res);
+    }
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  }
 }
 
 export const apiClient = new ApiClient();
-

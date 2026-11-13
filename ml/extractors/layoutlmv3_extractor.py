@@ -40,6 +40,33 @@ _CACHE_LOCK = threading.Lock()
 # Cache keyed by (resolved_checkpoint_dir, device) -> (tokenizer, image_processor, model)
 _WEIGHTS_CACHE: Dict[Tuple[str, str], Tuple[Any, Any, Any]] = {}
 _EXTRACTOR_CACHE: Dict[Tuple[str, str], "LayoutLMv3Extractor"] = {}
+_GPU_SEMAPHORE_LOCK = threading.Lock()
+_GPU_SEMAPHORE: Optional[threading.BoundedSemaphore] = None
+_GPU_SEMAPHORE_LIMIT: Optional[int] = None
+
+
+def _get_gpu_inference_semaphore() -> threading.BoundedSemaphore:
+    global _GPU_SEMAPHORE, _GPU_SEMAPHORE_LIMIT
+    limit = max(1, int(getattr(settings, "MAX_CONCURRENT_GPU_INFERENCE", 1)))
+    with _GPU_SEMAPHORE_LOCK:
+        if _GPU_SEMAPHORE is None or _GPU_SEMAPHORE_LIMIT != limit:
+            _GPU_SEMAPHORE = threading.BoundedSemaphore(limit)
+            _GPU_SEMAPHORE_LIMIT = limit
+        return _GPU_SEMAPHORE
+
+
+def preload_worker_model_if_ready() -> bool:
+    """Called on Celery worker process startup when PRELOAD_LAYOUTLMV3_ON_WORKER_START is enabled."""
+    if not getattr(settings, "PRELOAD_LAYOUTLMV3_ON_WORKER_START", False):
+        return False
+    extractor = get_cached_layoutlmv3_extractor()
+    valid, _ = extractor.validate_checkpoint()
+    if not valid:
+        logger.info("Skipping LayoutLMv3 preload: checkpoint/runtime not ready.")
+        return False
+    extractor.load_model()
+    logger.info("Preloaded LayoutLMv3 checkpoint '%s' onto '%s'", sanitize_checkpoint_identity(extractor.checkpoint_dir), extractor._device)
+    return True
 
 
 def sanitize_checkpoint_identity(checkpoint_dir: Union[str, Path]) -> str:
@@ -405,19 +432,52 @@ class LayoutLMv3Extractor(BaseExtractor):
             as_numpy=False,
         )
 
-        input_ids = prepared["input_ids"].unsqueeze(0).to(self._device)
-        attention_mask = prepared["attention_mask"].unsqueeze(0).to(self._device)
-        bbox = prepared["bbox"].unsqueeze(0).to(self._device)
-        pixel_values = prepared["pixel_values"].unsqueeze(0).to(self._device)
+        input_ids = prepared["input_ids"]
+        attention_mask = prepared["attention_mask"]
+        bbox = prepared["bbox"]
+        pixel_values = prepared["pixel_values"]
         word_ids = prepared["word_ids"]
 
-        with torch.no_grad():
-            outputs = self._model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                bbox=bbox,
-                pixel_values=pixel_values,
-            )
+        device_used = self._device
+        fallback_used = False
+
+        if str(device_used).startswith("cuda"):
+            sem = _get_gpu_inference_semaphore()
+            with sem:
+                try:
+                    with torch.no_grad():
+                        outputs = self._model(
+                            input_ids=input_ids.unsqueeze(0).to(device_used),
+                            attention_mask=attention_mask.unsqueeze(0).to(device_used),
+                            bbox=bbox.unsqueeze(0).to(device_used),
+                            pixel_values=pixel_values.unsqueeze(0).to(device_used),
+                        )
+                except RuntimeError as exc:
+                    if "out of memory" in str(exc).lower():
+                        logger.warning("GPU out-of-memory during LayoutLMv3 inference; falling back to CPU explicitly.")
+                        if HAS_TORCH and torch is not None and hasattr(torch, "cuda"):
+                            torch.cuda.empty_cache()
+                        cpu_extractor = get_cached_layoutlmv3_extractor(self.checkpoint_dir, device="cpu")
+                        cpu_extractor.load_model()
+                        device_used = "cpu"
+                        fallback_used = True
+                        with torch.no_grad():
+                            outputs = cpu_extractor._model(
+                                input_ids=input_ids.unsqueeze(0).to("cpu"),
+                                attention_mask=attention_mask.unsqueeze(0).to("cpu"),
+                                bbox=bbox.unsqueeze(0).to("cpu"),
+                                pixel_values=pixel_values.unsqueeze(0).to("cpu"),
+                            )
+                    else:
+                        raise
+        else:
+            with torch.no_grad():
+                outputs = self._model(
+                    input_ids=input_ids.unsqueeze(0).to(device_used),
+                    attention_mask=attention_mask.unsqueeze(0).to(device_used),
+                    bbox=bbox.unsqueeze(0).to(device_used),
+                    pixel_values=pixel_values.unsqueeze(0).to(device_used),
+                )
 
         logits = outputs.logits[0].detach().cpu()
         decoded = decode_layoutlmv3_predictions(
@@ -481,8 +541,9 @@ class LayoutLMv3Extractor(BaseExtractor):
             validation_errors=validation_errors,
             metadata={
                 "model": "microsoft/layoutlmv3-base",
-                "checkpoint": str(self.checkpoint_dir),
-                "device": self._device,
+                "checkpoint": sanitize_checkpoint_identity(self.checkpoint_dir),
+                "device": device_used,
+                "device_fallback": fallback_used,
                 "num_tokens": len(words),
                 "ocr_tokens": [
                     {

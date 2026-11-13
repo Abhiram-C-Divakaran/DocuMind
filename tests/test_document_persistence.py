@@ -1,18 +1,27 @@
 import pytest
 from httpx import AsyncClient
+
+from backend.app.worker.tasks import execute_processing_job_sync
 from tests.conftest import MINIMAL_PDF_BYTES
 
 
 @pytest.mark.asyncio
 async def test_document_persistence_and_retrieval(client: AsyncClient):
-    # 1. Upload a document with explicit placeholder method
+    # 1. Enqueue document with explicit placeholder method -> 202 Accepted
     files = {"file": ("vendor_bill.pdf", MINIMAL_PDF_BYTES, "application/pdf")}
     data = {"extraction_method": "PLACEHOLDER"}
     upload_res = await client.post("/api/v1/documents", files=files, data=data)
-    assert upload_res.status_code == 201
-    doc = upload_res.json()["document"]
+    assert upload_res.status_code == 202
+    payload = upload_res.json()
+    doc = payload["document"]
+    job = payload["job"]
     doc_id = doc["id"]
     assert doc["status"] == "PENDING"
+    assert job["status"] == "QUEUED"
+
+    # Execute queued worker job synchronously against test DB
+    worker_res = execute_processing_job_sync(job["id"])
+    assert worker_res["status"] == "COMPLETED"
 
     # 2. Retrieve document list
     list_res = await client.get("/api/v1/documents")
@@ -38,16 +47,20 @@ async def test_document_persistence_and_retrieval(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_tesseract_processing_transition_and_persistence(client: AsyncClient):
-    # Upload with TESSERACT_BASELINE
     files = {"file": ("receipt_scan.pdf", MINIMAL_PDF_BYTES, "application/pdf")}
     data = {"extraction_method": "TESSERACT_BASELINE"}
     upload_res = await client.post("/api/v1/documents", files=files, data=data)
-    assert upload_res.status_code == 201
+    assert upload_res.status_code == 202
     doc = upload_res.json()["document"]
-    # Depending on whether tesseract is installed on host, status is COMPLETED or FAILED
-    assert doc["status"] in ["COMPLETED", "FAILED"]
-    assert len(doc["extractions"]) > 0
-    assert doc["extractions"][0]["extraction_method"] == "TESSERACT_BASELINE"
+    job = upload_res.json()["job"]
+    assert doc["status"] == "PENDING"
+
+    execute_processing_job_sync(job["id"])
+
+    refreshed = await client.get(f"/api/v1/documents/{doc['id']}")
+    assert refreshed.status_code == 200
+    refreshed_doc = refreshed.json()
+    assert refreshed_doc["status"] in ["COMPLETED", "FAILED"]
 
 
 @pytest.mark.asyncio

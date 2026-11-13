@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+documind.db
+*.db
+node_modules
+frontend/dist
+storage
+checkpoints
+data
+.env
+

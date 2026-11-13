@@ -6,18 +6,23 @@ import {
   FileCheck,
   ShieldCheck,
   Info,
+  Clock,
+  CheckCircle2,
+  Loader2,
 } from 'lucide-react';
 import { apiClient } from '../../api/client';
-import { DocumentUploadResponse, ModelReadinessResponse } from '../../types';
+import { DocumentStatusResponse, DocumentUploadResponse, ModelReadinessResponse } from '../../types';
 
 interface DocumentUploaderProps {
   onUploadSuccess: (response: DocumentUploadResponse) => void;
   onCancel?: () => void;
+  onJobFinished?: () => void;
 }
 
 export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
   onUploadSuccess,
   onCancel,
+  onJobFinished,
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -28,6 +33,8 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
   const [validationWarning, setValidationWarning] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<ModelReadinessResponse | null>(null);
   const [readinessError, setReadinessError] = useState<string | null>(null);
+  const [trackedDocId, setTrackedDocId] = useState<string | null>(null);
+  const [trackedStatus, setTrackedStatus] = useState<DocumentStatusResponse | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -96,6 +103,38 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
     }
   };
 
+  useEffect(() => {
+    if (!trackedDocId) return;
+    let cancelled = false;
+    let timerId: number | undefined;
+    let delayMs = 1500;
+
+    const pollStatus = async () => {
+      try {
+        const st = await apiClient.fetchDocumentStatus(trackedDocId);
+        if (cancelled) return;
+        setTrackedStatus(st);
+        const terminal = st.document_status === 'COMPLETED' || st.document_status === 'FAILED';
+        if (terminal) {
+          if (onJobFinished) onJobFinished();
+          return;
+        }
+      } catch {
+        // Keep backing off cleanly on transient poll errors
+      }
+      if (!cancelled) {
+        delayMs = Math.min(8000, Math.round(delayMs * 1.4));
+        timerId = window.setTimeout(pollStatus, delayMs);
+      }
+    };
+
+    timerId = window.setTimeout(pollStatus, delayMs);
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+    };
+  }, [trackedDocId, onJobFinished]);
+
   const handleUploadSubmit = async () => {
     if (!selectedFile) return;
 
@@ -104,6 +143,17 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
 
     try {
       const res = await apiClient.uploadDocument(selectedFile, extractionMethod, requestReview);
+      setTrackedDocId(res.document.id);
+      if (res.job) {
+        setTrackedStatus({
+          document_id: res.document.id,
+          document_status: res.document.status,
+          review_status: res.document.review_status,
+          needs_review: res.document.needs_review,
+          latest_job: res.job,
+          jobs: [res.job],
+        });
+      }
       onUploadSuccess(res);
       setSelectedFile(null);
       setRequestReview(false);
@@ -312,6 +362,36 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
         <div className="mt-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
           <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
           <span className="font-medium">{uploadError}</span>
+        </div>
+      )}
+
+      {/* Discrete Async Job Tracker */}
+      {trackedStatus && (
+        <div className="mt-4 p-3.5 rounded-lg border border-slate-200 bg-slate-50 text-xs space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-slate-800 flex items-center gap-1.5">
+              {trackedStatus.document_status === 'COMPLETED' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              ) : trackedStatus.document_status === 'FAILED' ? (
+                <AlertCircle className="w-4 h-4 text-rose-600" />
+              ) : (
+                <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+              )}
+              <span>Async Job State: {trackedStatus.latest_job?.status || trackedStatus.document_status}</span>
+            </span>
+            {trackedStatus.latest_job && (
+              <span className="font-mono text-[11px] text-slate-500">
+                Attempt {trackedStatus.latest_job.attempts}/{trackedStatus.latest_job.max_attempts}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-slate-600">
+            <Clock className="w-3.5 h-3.5 text-slate-400" />
+            <span>
+              Document Status: <strong>{trackedStatus.document_status}</strong>
+              {trackedStatus.error_message ? ` — ${trackedStatus.error_message}` : ''}
+            </span>
+          </div>
         </div>
       )}
 

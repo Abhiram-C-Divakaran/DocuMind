@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiClient } from './api/client';
+import { authStorage } from './api/authStorage';
 import {
   DocumentItem,
   DashboardMetrics,
   HealthStatus,
   DocumentUploadResponse,
   ReviewMetrics,
+  User,
 } from './types';
 import { Sidebar, NavTab } from './components/Layout/Sidebar';
 import { Header } from './components/Layout/Header';
@@ -16,10 +18,16 @@ import { DocumentDetailModal } from './components/Documents/DocumentDetailModal'
 import { MlArchitectureView } from './components/Dashboard/MlArchitectureView';
 import { ReviewQueue } from './components/Reviews/ReviewQueue';
 import { DocumentReviewWorkspace } from './components/Reviews/DocumentReviewWorkspace';
+import { LoginPanel } from './components/Auth/LoginPanel';
+import { UserManagementView } from './components/Auth/UserManagementView';
 import { Toast, ToastMessage } from './components/Common/Toast';
-import { UploadCloud, FileText } from 'lucide-react';
+import { UploadCloud, FileText, Loader2 } from 'lucide-react';
 
 export const App: React.FC = () => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState<boolean>(true);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [activeReviewDocId, setActiveReviewDocId] = useState<string | null>(null);
   const [reviewRefreshSignal, setReviewRefreshSignal] = useState<number>(0);
@@ -34,26 +42,59 @@ export const App: React.FC = () => {
   const [loadingMetrics, setLoadingMetrics] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
-  // Filters & Pagination
   const [page, setPage] = useState<number>(1);
   const [pageSize] = useState<number>(10);
   const [search, setSearch] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('');
 
-  // Modals & Notifications
   const [selectedDoc, setSelectedDoc] = useState<DocumentItem | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  const showToast = (type: 'success' | 'error' | 'info', title: string, message?: string) => {
+  const pollDelayRef = useRef<number>(2000);
+
+  const showToast = useCallback((type: 'success' | 'error' | 'info', title: string, message?: string) => {
     setToast({
       id: Date.now().toString(),
       type,
       title,
       message,
     });
-  };
+  }, []);
 
-  // Fetch Health
+  useEffect(() => {
+    apiClient.setSessionExpiredHandler(() => {
+      setCurrentUser(null);
+      setSessionNotice('Your session has expired. Please sign in again.');
+    });
+    return () => {
+      apiClient.setSessionExpiredHandler(null);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const token = authStorage.getAccessToken();
+    if (!token) {
+      setCheckingAuth(false);
+      return;
+    }
+    apiClient
+      .getMe()
+      .then((user) => {
+        if (active) setCurrentUser(user);
+      })
+      .catch(() => {
+        authStorage.clear();
+        if (active) setCurrentUser(null);
+      })
+      .finally(() => {
+        if (active) setCheckingAuth(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const loadHealth = useCallback(async () => {
     try {
       const data = await apiClient.checkHealth();
@@ -63,8 +104,8 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Fetch Metrics
   const loadMetrics = useCallback(async () => {
+    if (!currentUser) return;
     setLoadingMetrics(true);
     try {
       const [docStats, revStats] = await Promise.all([
@@ -80,10 +121,10 @@ export const App: React.FC = () => {
     } finally {
       setLoadingMetrics(false);
     }
-  }, []);
+  }, [currentUser]);
 
-  // Fetch Documents
   const loadDocuments = useCallback(async () => {
+    if (!currentUser) return;
     setLoadingDocs(true);
     try {
       const data = await apiClient.fetchDocuments({
@@ -100,7 +141,7 @@ export const App: React.FC = () => {
     } finally {
       setLoadingDocs(false);
     }
-  }, [page, pageSize, statusFilter, search]);
+  }, [currentUser, page, pageSize, statusFilter, search, showToast]);
 
   const handleRefreshAll = async () => {
     setIsRefreshing(true);
@@ -112,19 +153,88 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     loadHealth();
-    loadMetrics();
-  }, [loadHealth, loadMetrics]);
+    if (currentUser) {
+      loadMetrics();
+      loadDocuments();
+    }
+  }, [currentUser, loadHealth, loadMetrics, loadDocuments]);
 
+  // Bounded exponential backoff polling while documents are queued/processing; cleans up on unmount
   useEffect(() => {
-    loadDocuments();
-  }, [loadDocuments]);
+    if (!currentUser) return;
+    const hasActive = documents.some(
+      (d) => d.status === 'PENDING' || d.status === 'PROCESSING'
+    );
+    if (!hasActive) {
+      pollDelayRef.current = 2000;
+      return;
+    }
+
+    let cancelled = false;
+    const delay = pollDelayRef.current;
+    const timer = window.setTimeout(async () => {
+      if (cancelled) return;
+      await Promise.all([loadDocuments(), loadMetrics()]);
+      pollDelayRef.current = Math.min(10000, Math.round(delay * 1.5));
+    }, delay);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [currentUser, documents, loadDocuments, loadMetrics]);
+
+  const handleLogout = async () => {
+    await apiClient.logout();
+    setCurrentUser(null);
+    setSelectedDoc(null);
+    setActiveReviewDocId(null);
+    setCurrentTab('dashboard');
+    setSessionNotice(null);
+  };
 
   const handleUploadSuccess = (response: DocumentUploadResponse) => {
-    showToast('success', 'Document Ingested', response.message);
+    pollDelayRef.current = 1500;
+    showToast('success', 'Document Queued (202)', response.message);
     loadMetrics();
     loadDocuments();
     setReviewRefreshSignal((n) => n + 1);
     setCurrentTab('documents');
+  };
+
+  const handleRetryDocument = async (doc: DocumentItem) => {
+    try {
+      const res = await apiClient.retryDocument(doc.id);
+      pollDelayRef.current = 1500;
+      showToast('info', 'Job Re-queued', res.message);
+      await Promise.all([loadDocuments(), loadMetrics()]);
+      if (selectedDoc?.id === doc.id) {
+        setSelectedDoc(res.document);
+      }
+    } catch (err: unknown) {
+      showToast('error', 'Retry Failed', (err as Error).message);
+    }
+  };
+
+  const handleCancelDocument = async (doc: DocumentItem) => {
+    try {
+      await apiClient.cancelDocument(doc.id);
+      showToast('info', 'Job Cancelled', `Stopped queued processing for '${doc.original_filename}'.`);
+      await Promise.all([loadDocuments(), loadMetrics()]);
+    } catch (err: unknown) {
+      showToast('error', 'Cancel Failed', (err as Error).message);
+    }
+  };
+
+  const handleDeleteDocument = async (doc: DocumentItem) => {
+    try {
+      await apiClient.deleteDocument(doc.id);
+      showToast('success', 'Document Deleted', `Removed '${doc.original_filename}'.`);
+      if (selectedDoc?.id === doc.id) setSelectedDoc(null);
+      await Promise.all([loadDocuments(), loadMetrics()]);
+    } catch (err: unknown) {
+      showToast('error', 'Delete Failed', (err as Error).message);
+    }
   };
 
   const handleOpenReviewWorkspace = (documentId: string) => {
@@ -132,36 +242,58 @@ export const App: React.FC = () => {
     setCurrentTab('reviews');
   };
 
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-300 text-sm gap-2.5">
+        <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+        <span>Verifying session...</span>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <LoginPanel
+        sessionNotice={sessionNotice}
+        onAuthenticated={(user) => {
+          setSessionNotice(null);
+          setCurrentUser(user);
+          setCurrentTab('dashboard');
+        }}
+      />
+    );
+  }
+
+  const canMutate = currentUser.role === 'ADMIN' || currentUser.role === 'REVIEWER';
+
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden text-slate-800">
-      {/* Sidebar */}
       <Sidebar
         currentTab={currentTab}
+        userRole={currentUser.role}
         onTabChange={(tab) => {
+          setCurrentTab(tab);
           if (tab !== 'reviews') {
             setActiveReviewDocId(null);
           }
-          setCurrentTab(tab);
         }}
         health={health}
         awaitingReviewCount={reviewMetrics?.awaiting_review ?? 0}
       />
 
-      {/* Main Container */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Header */}
         <Header
           currentTab={currentTab}
+          currentUser={currentUser}
+          onLogout={handleLogout}
           onOpenUpload={() => setCurrentTab('upload')}
           onRefresh={handleRefreshAll}
           isRefreshing={isRefreshing}
         />
 
-        {/* Dynamic Viewport */}
-        <main className="flex-1 overflow-y-auto p-8 space-y-8">
+        <main className="flex-1 overflow-y-auto p-6 lg:p-8 space-y-6">
           {currentTab === 'dashboard' && (
-            <div className="space-y-8 max-w-7xl mx-auto">
-              {/* Telemetry Metrics Cards */}
+            <div className="space-y-6 max-w-7xl mx-auto">
               <MetricsOverview
                 metrics={metrics}
                 reviewMetrics={reviewMetrics}
@@ -172,54 +304,62 @@ export const App: React.FC = () => {
                 }}
               />
 
-              {/* Quick Actions & Recent Docs Grid */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                {/* Recent Documents Table */}
-                <div className="lg:col-span-2 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-bold text-slate-900 tracking-tight flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-indigo-600" />
-                      <span>Recent Documents Ledger</span>
-                    </h3>
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Recent Ingestion Activity</h3>
+                    <p className="text-xs text-slate-500">Latest documents processed asynchronously</p>
+                  </div>
+                  <div className="flex items-center gap-3">
                     <button
                       onClick={() => setCurrentTab('documents')}
-                      className="text-xs font-semibold text-indigo-600 hover:text-indigo-800"
+                      className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 hover:underline"
                     >
-                      View all &rarr;
+                      View Full Ledger →
                     </button>
                   </div>
+                </div>
 
+                {documents.length > 0 ? (
                   <DocumentTable
                     documents={documents.slice(0, 5)}
-                    total={totalDocs}
-                    page={page}
-                    pageSize={pageSize}
+                    total={Math.min(documents.length, 5)}
+                    page={1}
+                    pageSize={5}
                     loading={loadingDocs}
-                    search={search}
-                    statusFilter={statusFilter}
-                    onSearchChange={setSearch}
-                    onStatusFilterChange={setStatusFilter}
-                    onPageChange={setPage}
+                    search=""
+                    statusFilter=""
+                    onSearchChange={() => {}}
+                    onStatusFilterChange={() => {}}
+                    onPageChange={() => {}}
                     onSelectDocument={(doc) => setSelectedDoc(doc)}
-                    onReviewDocument={(doc) => handleOpenReviewWorkspace(doc.id)}
-                    onUploadClick={() => setCurrentTab('upload')}
+                    onReviewDocument={canMutate ? (doc) => handleOpenReviewWorkspace(doc.id) : undefined}
+                    onRetryDocument={canMutate ? handleRetryDocument : undefined}
+                    onCancelDocument={canMutate ? handleCancelDocument : undefined}
+                    onDeleteDocument={canMutate ? handleDeleteDocument : undefined}
+                    canMutate={canMutate}
+                    onUploadClick={() => canMutate && setCurrentTab('upload')}
                   />
-                </div>
-
-                {/* Upload Quick Launcher */}
-                <div className="space-y-3">
-                  <h3 className="text-sm font-bold text-slate-900 tracking-tight flex items-center gap-2">
-                    <UploadCloud className="w-4 h-4 text-indigo-600" />
-                    <span>Quick Ingest</span>
-                  </h3>
-                  <DocumentUploader onUploadSuccess={handleUploadSuccess} />
-                </div>
+                ) : (
+                  <div className="p-8 text-center text-slate-400 text-xs">
+                    <FileText className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                    <p className="font-medium text-slate-600 mb-1">No documents ingested yet</p>
+                    {canMutate && (
+                      <button
+                        onClick={() => setCurrentTab('upload')}
+                        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 font-semibold rounded-md hover:bg-indigo-100 transition-colors"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5" /> Upload First Receipt
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
 
           {currentTab === 'documents' && (
-            <div className="space-y-6 max-w-7xl mx-auto">
+            <div className="max-w-7xl mx-auto">
               <DocumentTable
                 documents={documents}
                 total={totalDocs}
@@ -228,22 +368,37 @@ export const App: React.FC = () => {
                 loading={loadingDocs}
                 search={search}
                 statusFilter={statusFilter}
-                onSearchChange={setSearch}
-                onStatusFilterChange={setStatusFilter}
-                onPageChange={setPage}
+                onSearchChange={(q) => {
+                  setSearch(q);
+                  setPage(1);
+                }}
+                onStatusFilterChange={(s) => {
+                  setStatusFilter(s);
+                  setPage(1);
+                }}
+                onPageChange={(p) => setPage(p)}
                 onSelectDocument={(doc) => setSelectedDoc(doc)}
-                onReviewDocument={(doc) => handleOpenReviewWorkspace(doc.id)}
-                onUploadClick={() => setCurrentTab('upload')}
+                onReviewDocument={canMutate ? (doc) => handleOpenReviewWorkspace(doc.id) : undefined}
+                onRetryDocument={canMutate ? handleRetryDocument : undefined}
+                onCancelDocument={canMutate ? handleCancelDocument : undefined}
+                onDeleteDocument={canMutate ? handleDeleteDocument : undefined}
+                canMutate={canMutate}
+                onUploadClick={() => canMutate && setCurrentTab('upload')}
               />
             </div>
           )}
 
           {currentTab === 'reviews' && (
-            <div className="space-y-6 max-w-7xl mx-auto">
+            <div className="max-w-7xl mx-auto">
               {activeReviewDocId ? (
                 <DocumentReviewWorkspace
                   documentId={activeReviewDocId}
-                  onBack={() => setActiveReviewDocId(null)}
+                  readOnly={!canMutate}
+                  onBack={() => {
+                    setActiveReviewDocId(null);
+                    loadMetrics();
+                    loadDocuments();
+                  }}
                   onReviewUpdated={() => {
                     loadMetrics();
                     loadDocuments();
@@ -259,29 +414,55 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {currentTab === 'upload' && (
-            <div className="py-6">
+          {currentTab === 'upload' && canMutate && (
+            <div className="max-w-4xl mx-auto py-4">
               <DocumentUploader
                 onUploadSuccess={handleUploadSuccess}
-                onCancel={() => setCurrentTab('documents')}
+                onJobFinished={() => {
+                  loadMetrics();
+                  loadDocuments();
+                  setReviewRefreshSignal((n) => n + 1);
+                }}
+                onCancel={() => setCurrentTab('dashboard')}
               />
             </div>
           )}
 
-          {currentTab === 'ml-architecture' && <MlArchitectureView />}
+          {currentTab === 'ml-architecture' && (
+            <div className="max-w-7xl mx-auto">
+              <MlArchitectureView />
+            </div>
+          )}
+
+          {currentTab === 'users' && currentUser.role === 'ADMIN' && (
+            <div className="max-w-7xl mx-auto">
+              <UserManagementView
+                currentUser={currentUser}
+                onToast={(type, msg) => showToast(type, msg)}
+              />
+            </div>
+          )}
         </main>
       </div>
 
-      {/* Document Inspector Modal */}
       <DocumentDetailModal
         document={selectedDoc}
         onClose={() => setSelectedDoc(null)}
-        onOpenReview={handleOpenReviewWorkspace}
+        canMutate={canMutate}
+        onRetryDocument={canMutate ? handleRetryDocument : undefined}
+        onOpenReview={
+          canMutate
+            ? (docId) => {
+                setSelectedDoc(null);
+                handleOpenReviewWorkspace(docId);
+              }
+            : undefined
+        }
       />
 
-      {/* Global Toast */}
       <Toast toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 };
 
+export default App;

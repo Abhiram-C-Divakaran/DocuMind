@@ -370,13 +370,21 @@ async def test_document_service_executes_layoutlmv3_end_to_end(tmp_path):
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from backend.app.database import Base
+    from backend.app.config import settings
+    from backend.app.database import Base, reset_sync_engine
     from backend.app.models.document import Document, DocumentStatus
     from backend.app.models.extraction import ExtractionResult
     from backend.app.services.document_service import DocumentService
+    from backend.app.services.storage import storage_service
+    from backend.app.worker.tasks import execute_processing_job_sync
     from ml.extractors.layoutlmv3_extractor import LayoutLMv3Extractor
 
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'test_lmv3.db'}"
+    db_file = tmp_path / "test_lmv3.db"
+    db_url = f"sqlite+aiosqlite:///{db_file}"
+    orig_sync_url = settings.SYNC_DATABASE_URL
+    settings.SYNC_DATABASE_URL = f"sqlite:///{db_file}"
+    reset_sync_engine()
+
     engine = create_async_engine(db_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -407,29 +415,39 @@ async def test_document_service_executes_layoutlmv3_end_to_end(tmp_path):
         )
 
     service = DocumentService()
-    with patch("backend.app.services.document_service.settings.UPLOAD_DIR", str(tmp_path / "uploads")), \
-         patch.object(LayoutLMv3Extractor, "validate_checkpoint", return_value=(True, "Valid mock checkpoint")), \
-         patch.object(LayoutLMv3Extractor, "extract", new=fake_extract):
-        async with session_factory() as db:
-            res, status_msg = await service.create_document_from_upload(
-                db=db,
-                filename="receipt.png",
-                content_type="image/png",
-                file_bytes=img_bytes,
-                extraction_method="LAYOUTLMV3",
-            )
-            assert res.status == DocumentStatus.COMPLETED.value
-            assert "LayoutLMv3" in status_msg
+    orig_base_dir = storage_service.base_dir
+    storage_service.base_dir = tmp_path / "uploads"
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    try:
+        with patch.object(LayoutLMv3Extractor, "validate_checkpoint", return_value=(True, "Valid mock checkpoint")), \
+             patch.object(LayoutLMv3Extractor, "extract", new=fake_extract):
+            async with session_factory() as db:
+                res, job, status_msg = await service.enqueue_document_upload(
+                    db=db,
+                    filename="receipt.png",
+                    content_type="image/png",
+                    file_bytes=img_bytes,
+                    extraction_method="LAYOUTLMV3",
+                )
+                assert res.status == DocumentStatus.PENDING.value
+                assert "queued" in status_msg.lower()
 
-            doc_row = (await db.execute(select(Document).where(Document.id == res.id))).scalar_one()
-            assert doc_row.status == DocumentStatus.COMPLETED.value
+            worker_out = execute_processing_job_sync(job.id)
+            assert worker_out["status"] == "COMPLETED"
 
-            ext_row = (
-                await db.execute(select(ExtractionResult).where(ExtractionResult.document_id == res.id))
-            ).scalar_one()
-            assert ext_row.extraction_method == "LAYOUTLMV3"
-            assert ext_row.structured_data["vendor_name"] == "SUNWAY MART"
-            assert ext_row.structured_data["total_amount"] == "29.90"
-            assert ext_row.confidence == pytest.approx(0.92)
+            async with session_factory() as db:
+                doc_row = (await db.execute(select(Document).where(Document.id == res.id))).scalar_one()
+                assert doc_row.status == DocumentStatus.COMPLETED.value
 
-    await engine.dispose()
+                ext_row = (
+                    await db.execute(select(ExtractionResult).where(ExtractionResult.document_id == res.id))
+                ).scalar_one()
+                assert ext_row.extraction_method == "LAYOUTLMV3"
+                assert ext_row.structured_data["vendor_name"] == "SUNWAY MART"
+                assert ext_row.structured_data["total_amount"] == "29.90"
+                assert ext_row.confidence == pytest.approx(0.92)
+    finally:
+        storage_service.base_dir = orig_base_dir
+        reset_sync_engine()
+        settings.SYNC_DATABASE_URL = orig_sync_url
+        await engine.dispose()

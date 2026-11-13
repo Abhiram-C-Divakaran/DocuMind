@@ -8,7 +8,7 @@ from tests.conftest import MINIMAL_JPEG_BYTES, MINIMAL_PDF_BYTES, MINIMAL_PNG_BY
 async def test_upload_valid_pdf(client: AsyncClient):
     files = {"file": ("test_invoice.pdf", MINIMAL_PDF_BYTES, "application/pdf")}
     response = await client.post("/api/v1/documents", files=files)
-    assert response.status_code == 201
+    assert response.status_code == 202
     data = response.json()
     assert "document" in data
     doc = data["document"]
@@ -23,7 +23,7 @@ async def test_upload_valid_pdf(client: AsyncClient):
 async def test_upload_valid_png(client: AsyncClient):
     files = {"file": ("receipt_scan.png", MINIMAL_PNG_BYTES, "image/png")}
     response = await client.post("/api/v1/documents", files=files)
-    assert response.status_code == 201
+    assert response.status_code == 202
     doc = response.json()["document"]
     assert doc["original_filename"] == "receipt_scan.png"
     assert doc["content_type"] == "image/png"
@@ -33,7 +33,7 @@ async def test_upload_valid_png(client: AsyncClient):
 async def test_upload_valid_jpeg(client: AsyncClient):
     files = {"file": ("receipt_photo.jpg", MINIMAL_JPEG_BYTES, "image/jpeg")}
     response = await client.post("/api/v1/documents", files=files)
-    assert response.status_code == 201
+    assert response.status_code == 202
     doc = response.json()["document"]
     assert doc["original_filename"] == "receipt_photo.jpg"
     assert doc["content_type"] == "image/jpeg"

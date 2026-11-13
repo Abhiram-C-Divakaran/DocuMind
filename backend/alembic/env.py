@@ -21,7 +21,11 @@ from backend.app.models import (  # noqa: F401
     DocumentReview,
     ExtractionResult,
     FieldCorrection,
+    OutboxEvent,
+    ProcessingJob,
+    RefreshToken,
     ReviewAuditEvent,
+    User,
 )
 
 config = context.config
@@ -33,6 +37,9 @@ target_metadata = Base.metadata
 
 
 def get_url():
+    configured = config.get_main_option("sqlalchemy.url")
+    if configured and not configured.startswith("driver://"):
+        return configured
     return settings.DATABASE_URL
 
 

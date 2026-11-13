@@ -37,6 +37,7 @@ interface DocumentReviewWorkspaceProps {
   documentId: string;
   onBack: () => void;
   onReviewUpdated?: () => void;
+  readOnly?: boolean;
 }
 
 interface FormLineItem {
@@ -157,6 +158,7 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
   documentId,
   onBack,
   onReviewUpdated,
+  readOnly = false,
 }) => {
   const [review, setReview] = useState<DocumentReview | null>(null);
   const [previewMeta, setPreviewMeta] = useState<PreviewMeta | null>(null);
@@ -179,6 +181,7 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
   const [currentPage, setCurrentPage] = useState(1);
   const [previewLoading, setPreviewLoading] = useState(true);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
   const [showRawText, setShowRawText] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
 
@@ -194,7 +197,9 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
   const hasClientErrors = Object.keys(clientErrors).length > 0;
 
   const isLocked =
-    review?.review_status === 'APPROVED' || review?.review_status === 'REJECTED';
+    Boolean(readOnly) ||
+    review?.review_status === 'APPROVED' ||
+    review?.review_status === 'REJECTED';
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -480,9 +485,41 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
   const maxPreviewPages = previewMeta
     ? Math.min(previewMeta.total_pages, previewMeta.max_preview_pages)
     : 1;
-  const previewSrc = previewMeta?.is_pdf
-    ? apiClient.getDocumentPreviewUrl(documentId, currentPage)
-    : apiClient.getDocumentPreviewUrl(documentId);
+
+  useEffect(() => {
+    if (!previewMeta) return;
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    apiClient
+      .fetchDocumentPreviewBlobUrl(documentId, previewMeta.is_pdf ? currentPage : undefined)
+      .then((blobUrl) => {
+        if (cancelled) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        createdUrl = blobUrl;
+        setPreviewBlobUrl(blobUrl);
+        setPreviewLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setPreviewBlobUrl(null);
+        setPreviewLoading(false);
+        setPreviewError(
+          err instanceof Error ? err.message : 'Could not load authenticated document preview.'
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
+    };
+  }, [documentId, previewMeta, currentPage]);
 
   return (
     <div className="space-y-4">
@@ -711,9 +748,9 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
                     Retry Preview
                   </button>
                 </div>
-              ) : (
+              ) : previewBlobUrl ? (
                 <img
-                  src={previewSrc}
+                  src={previewBlobUrl}
                   alt={previewMeta?.original_filename || 'Document preview'}
                   style={{ width: `${zoomPct}%`, maxWidth: 'none' }}
                   onLoad={() => setPreviewLoading(false)}
@@ -723,7 +760,7 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
                   }}
                   className="rounded shadow-md bg-white border border-slate-200 transition-all duration-150"
                 />
-              )}
+              ) : null}
             </div>
 
             {previewMeta && previewMeta.total_pages > previewMeta.max_preview_pages && (
@@ -1115,18 +1152,21 @@ export const DocumentReviewWorkspace: React.FC<DocumentReviewWorkspaceProps> = (
               {isLocked ? (
                 <div className="flex items-center justify-between w-full gap-3">
                   <span className="text-xs text-slate-600">
-                    Review closed as <strong>{review.review_status}</strong>
-                    {review.approved_at ? ` (${new Date(review.approved_at).toLocaleString()})` : ''}.
+                    {readOnly
+                      ? `Read-only viewer mode (${review.review_status}).`
+                      : `Review closed as ${review.review_status}${review.approved_at ? ` (${new Date(review.approved_at).toLocaleString()})` : ''}.`}
                   </span>
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={handleReopen}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Reopen Review</span>
-                  </button>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={handleReopen}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Reopen Review</span>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>

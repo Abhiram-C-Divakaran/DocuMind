@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { DocumentItem } from '../../types';
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../api/client';
+import { DocumentItem, DocumentStatusResponse } from '../../types';
 import { StatusBadge } from './StatusBadge';
 import { ReviewStatusBadge } from './ReviewStatusBadge';
 import {
@@ -23,22 +24,47 @@ import {
   Clock,
   Sparkles,
   ClipboardCheck,
+  RotateCcw,
 } from 'lucide-react';
 
 interface DocumentDetailModalProps {
   document: DocumentItem | null;
   onClose: () => void;
   onOpenReview?: (documentId: string) => void;
+  onRetryDocument?: (doc: DocumentItem) => void;
+  canMutate?: boolean;
 }
 
 export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
   document,
   onClose,
   onOpenReview,
+  onRetryDocument,
+  canMutate = true,
 }) => {
   const [activeTab, setActiveTab] = useState<'structured' | 'validation' | 'raw'>('structured');
   const [ocrTextOpen, setOcrTextOpen] = useState<boolean>(false);
   const [copiedOcr, setCopiedOcr] = useState<boolean>(false);
+  const [statusHistory, setStatusHistory] = useState<DocumentStatusResponse | null>(null);
+
+  useEffect(() => {
+    if (!document) {
+      setStatusHistory(null);
+      return;
+    }
+    let active = true;
+    apiClient
+      .fetchDocumentStatus(document.id)
+      .then((res) => {
+        if (active) setStatusHistory(res);
+      })
+      .catch(() => {
+        if (active) setStatusHistory(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [document?.id, document?.status]);
 
   if (!document) return null;
 
@@ -151,14 +177,57 @@ export const DocumentDetailModal: React.FC<DocumentDetailModalProps> = ({
               {/* Failure Alert */}
               {isFailed && (
                 <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs">
-                  <div className="flex items-start gap-3">
-                    <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-bold text-sm text-rose-950">OCR Processing Failed</p>
-                      <p className="mt-1 leading-relaxed whitespace-pre-wrap font-mono text-[11px] text-rose-800 bg-rose-100/60 p-2.5 rounded-md border border-rose-200">
-                        {document.error_message || validationErrors[0] || 'Unknown processing error.'}
-                      </p>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold text-sm text-rose-950">Processing Failed</p>
+                        <p className="mt-1 leading-relaxed whitespace-pre-wrap font-mono text-[11px] text-rose-800 bg-rose-100/60 p-2.5 rounded-md border border-rose-200">
+                          {document.error_message || validationErrors[0] || 'Unknown processing error.'}
+                        </p>
+                      </div>
                     </div>
+                    {canMutate && onRetryDocument && (
+                      <button
+                        onClick={() => onRetryDocument(document)}
+                        className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Retry Job
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Processing & Job History Panel */}
+              {statusHistory && statusHistory.jobs.length > 0 && (
+                <div className="p-3.5 rounded-xl bg-white border border-slate-200 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800">Processing & Job History</span>
+                    <span className="text-[11px] text-slate-500">
+                      {statusHistory.jobs.length} job{statusHistory.jobs.length > 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {statusHistory.jobs.slice(0, 5).map((job) => (
+                      <div
+                        key={job.id}
+                        className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-slate-50 border border-slate-200/80 text-[11px]"
+                      >
+                        <div className="flex items-center gap-2 font-mono">
+                          <span className="font-semibold text-slate-800">{job.status}</span>
+                          <span className="text-slate-500">{job.extraction_method}</span>
+                          <span className="text-slate-500">
+                            attempts: {job.attempts}/{job.max_attempts}
+                          </span>
+                        </div>
+                        <span className="text-slate-500">
+                          {new Date(job.created_at).toLocaleString()}
+                          {job.error_code ? ` · ${job.error_code}` : ''}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

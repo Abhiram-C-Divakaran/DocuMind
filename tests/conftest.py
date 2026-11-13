@@ -1,20 +1,26 @@
 import asyncio
-import os
 import shutil
 import tempfile
+from io import BytesIO
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Tuple
+from unittest.mock import patch
+
+from PIL import Image
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.config import settings
-from backend.app.database import Base, get_db
+from backend.app.core.security import create_access_token, hash_password, rate_limiter
+from backend.app.database import Base, get_db, reset_sync_engine
 from backend.app.main import app
+from backend.app.models.user import User, UserRole
+from backend.app.services.document_service import DocumentService
 from backend.app.services.storage import storage_service
 
-# Sample valid binary payloads
+# Minimal valid binary PDF payload
 MINIMAL_PDF_BYTES = (
     b"%PDF-1.4\n"
     b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
@@ -24,19 +30,15 @@ MINIMAL_PDF_BYTES = (
     b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n168\n%%EOF\n"
 )
 
-# 1x1 valid PNG
-MINIMAL_PNG_BYTES = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4"
-    b"\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
-)
 
-# Minimal JPEG
-MINIMAL_JPEG_BYTES = (
-    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07"
-    b"\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e"
-    b"\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01"
-    b"\x01\x11\x00\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
-)
+def _make_minimal_image_bytes(fmt: str) -> bytes:
+    buf = BytesIO()
+    Image.new("RGB", (4, 4), color=(255, 255, 255)).save(buf, format=fmt)
+    return buf.getvalue()
+
+
+MINIMAL_PNG_BYTES = _make_minimal_image_bytes("PNG")
+MINIMAL_JPEG_BYTES = _make_minimal_image_bytes("JPEG")
 
 
 @pytest.fixture(scope="session")
@@ -46,11 +48,38 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter_and_fast_dispatch():
+    rate_limiter.reset_memory()
+    with (
+        patch.object(
+            DocumentService,
+            "_dispatch_celery_job",
+            return_value=("celery-test-task", None),
+        ),
+        patch.object(
+            DocumentService,
+            "_revoke_celery_task",
+            return_value=None,
+        ),
+    ):
+        yield
+    rate_limiter.reset_memory()
+
+
 @pytest_asyncio.fixture(scope="function")
 async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
-    # In-memory test database
+    db_dir = tempfile.mkdtemp()
+    db_path = Path(db_dir) / "test_documind.db"
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    sync_url = f"sqlite:///{db_path}"
+
+    orig_sync_url = settings.SYNC_DATABASE_URL
+    settings.SYNC_DATABASE_URL = sync_url
+    reset_sync_engine()
+
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        async_url,
         connect_args={"check_same_thread": False},
         future=True,
     )
@@ -68,11 +97,47 @@ async def test_db_session() -> AsyncGenerator[AsyncSession, None]:
         await conn.run_sync(Base.metadata.drop_all)
 
     await engine.dispose()
+    reset_sync_engine()
+    settings.SYNC_DATABASE_URL = orig_sync_url
+    shutil.rmtree(db_dir, ignore_errors=True)
+
+
+async def _seed_user(
+    session: AsyncSession,
+    email: str,
+    role: UserRole,
+    password: str = "StrongPass123!",
+) -> Tuple[User, str]:
+    user = User(
+        email=email,
+        full_name=f"Test {role.value}",
+        password_hash=hash_password(password),
+        role=role.value,
+        is_active=True,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    token, _ = create_access_token(subject=user.id, email=user.email, role=user.role)
+    return user, token
 
 
 @pytest_asyncio.fixture(scope="function")
-async def client(test_db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
-    # Configure temporary test storage directory
+async def test_users(test_db_session: AsyncSession) -> dict:
+    admin, admin_token = await _seed_user(test_db_session, "admin@test.local", UserRole.ADMIN)
+    reviewer, reviewer_token = await _seed_user(test_db_session, "reviewer@test.local", UserRole.REVIEWER)
+    other_reviewer, other_token = await _seed_user(test_db_session, "other@test.local", UserRole.REVIEWER)
+    viewer, viewer_token = await _seed_user(test_db_session, "viewer@test.local", UserRole.VIEWER)
+    return {
+        "admin": (admin, admin_token),
+        "reviewer": (reviewer, reviewer_token),
+        "other": (other_reviewer, other_token),
+        "viewer": (viewer, viewer_token),
+    }
+
+
+@pytest_asyncio.fixture(scope="function")
+async def anon_client(test_db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     temp_dir = tempfile.mkdtemp()
     original_upload_dir = storage_service.base_dir
     storage_service.base_dir = Path(temp_dir)
@@ -90,3 +155,39 @@ async def client(test_db_session: AsyncSession) -> AsyncGenerator[AsyncClient, N
     storage_service.base_dir = original_upload_dir
     shutil.rmtree(temp_dir, ignore_errors=True)
 
+
+@pytest_asyncio.fixture(scope="function")
+async def client(
+    anon_client: AsyncClient, test_users: dict
+) -> AsyncGenerator[AsyncClient, None]:
+    _, token = test_users["reviewer"]
+    anon_client.headers.update({"Authorization": f"Bearer {token}"})
+    yield anon_client
+
+
+@pytest_asyncio.fixture(scope="function")
+async def admin_client(
+    test_db_session: AsyncSession, test_users: dict
+) -> AsyncGenerator[AsyncClient, None]:
+    _, token = test_users["admin"]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture(scope="function")
+async def viewer_client(
+    test_db_session: AsyncSession, test_users: dict
+) -> AsyncGenerator[AsyncClient, None]:
+    _, token = test_users["viewer"]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as ac:
+        yield ac

@@ -328,8 +328,18 @@ async def test_models_readiness_endpoint_and_path_sanitization(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_end_to_end_layoutlmv3_upload_review_and_feedback_export(tmp_path: Path):
+    from backend.app.core.security import create_access_token, hash_password
+    from backend.app.database import reset_sync_engine
+    from backend.app.models.user import User, UserRole
+    from backend.app.worker.tasks import execute_processing_job_sync
+
     clear_layoutlmv3_cache()
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'e2e_3b.db'}"
+    db_file = tmp_path / "e2e_3b.db"
+    db_url = f"sqlite+aiosqlite:///{db_file}"
+    orig_sync_url = settings.SYNC_DATABASE_URL
+    settings.SYNC_DATABASE_URL = f"sqlite:///{db_file}"
+    reset_sync_engine()
+
     engine = create_async_engine(db_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -341,6 +351,20 @@ async def test_end_to_end_layoutlmv3_upload_review_and_feedback_export(tmp_path:
 
     app.dependency_overrides[get_db] = override_get_db
     img_bytes = _create_sample_png(tmp_path / "receipt_e2e.png")
+
+    async with session_factory() as db:
+        user = User(
+            email="e2e3b@test.local",
+            full_name="QA E2E",
+            password_hash=hash_password("StrongPass123!"),
+            role=UserRole.REVIEWER.value,
+            is_active=True,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        token, _ = create_access_token(subject=user.id, email=user.email, role=user.role)
+    auth_headers = {"Authorization": f"Bearer {token}"}
 
     async def fake_lm_extract(self, file_path, **kwargs):
         return ExtractionOutput(
@@ -373,18 +397,26 @@ async def test_end_to_end_layoutlmv3_upload_review_and_feedback_export(tmp_path:
              patch.object(LayoutLMv3Extractor, "validate_checkpoint", return_value=(True, "Valid")), \
              patch.object(LayoutLMv3Extractor, "extract", new=fake_lm_extract):
             (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=auth_headers) as client:
                 up = await client.post(
                     "/api/v1/documents",
                     files={"file": ("receipt_e2e.png", img_bytes, "image/png")},
                     data={"extraction_method": "LAYOUTLMV3"},
                 )
-                assert up.status_code == 201, up.text
+                assert up.status_code == 202, up.text
                 doc = up.json()["document"]
+                job = up.json()["job"]
                 doc_id = doc["id"]
-                assert doc["status"] == DocumentStatus.COMPLETED.value
-                assert doc["review_status"] == ReviewStatus.PENDING_REVIEW.value
-                assert doc["extractions"][0]["extraction_method"] == "LAYOUTLMV3"
+                assert doc["status"] == DocumentStatus.PENDING.value
+
+                execute_processing_job_sync(job["id"])
+
+                doc_res = await client.get(f"/api/v1/documents/{doc_id}")
+                assert doc_res.status_code == 200
+                processed_doc = doc_res.json()
+                assert processed_doc["status"] == DocumentStatus.COMPLETED.value
+                assert processed_doc["review_status"] == ReviewStatus.PENDING_REVIEW.value
+                assert processed_doc["extractions"][0]["extraction_method"] == "LAYOUTLMV3"
 
                 # Reviewer edits and approves -> eligible for feedback export
                 approve = await client.post(
@@ -418,6 +450,8 @@ async def test_end_to_end_layoutlmv3_upload_review_and_feedback_export(tmp_path:
     finally:
         app.dependency_overrides.clear()
         clear_layoutlmv3_cache()
+        reset_sync_engine()
+        settings.SYNC_DATABASE_URL = orig_sync_url
         await engine.dispose()
 
 

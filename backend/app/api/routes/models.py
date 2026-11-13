@@ -1,5 +1,6 @@
 from fastapi import APIRouter, status
 
+from backend.app.api.routes.health import _check_redis_status, _check_worker_status
 from backend.app.config import settings
 from backend.app.models.extraction import ExtractionMethod
 from backend.app.schemas.models import ExtractionMethodReadiness, ModelReadinessResponse
@@ -71,6 +72,12 @@ async def get_model_readiness() -> ModelReadinessResponse:
         ),
     ]
 
+    worker_ok = (
+        _check_worker_status() == "available"
+        if _check_redis_status() == "connected"
+        else False
+    )
+
     return ModelReadinessResponse(
         default_method=default_method,
         ml_inference_enabled=bool(lm_info["inference_enabled"]),
@@ -84,6 +91,7 @@ async def get_model_readiness() -> ModelReadinessResponse:
         checkpoint_identity=lm_info["checkpoint_identity"],
         checkpoint_size_mb=lm_info["checkpoint_size_mb"],
         checkpoint_metadata=lm_info["metadata"],
+        worker_available=worker_ok,
         methods=methods,
     )
 
