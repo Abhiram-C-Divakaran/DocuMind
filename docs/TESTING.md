@@ -24,7 +24,7 @@ Targeted suites:
 - **End-to-end unmocked Tesseract OCR & review integration**: `python -m pytest -v tests/test_phase4b_ocr_and_review_integration.py`
 
 > [!NOTE]
-> `test_real_tesseract_ocr_and_review_workflow_unmocked` requires `tesseract` on `PATH` (as provided inside the backend/worker Docker container and on Ubuntu CI runners). On hosts without `tesseract`, it skips explicitly rather than faking OCR.
+> `test_real_tesseract_ocr_and_review_workflow_unmocked` requires `tesseract` on `PATH` (as provided inside the backend/worker Docker container and on Ubuntu CI runners). On hosts without `tesseract`, it skips explicitly unless `REQUIRE_REAL_TESSERACT=1` is set (enabled on Ubuntu CI), in which case both pytest and `scripts/e2e_test_server.py` fail instead of skipping or falling back to synthetic OCR.
 
 ---
 
@@ -33,9 +33,9 @@ Targeted suites:
 Validate clean schema upgrade, teardown, and re-upgrade:
 
 ```bash
-alembic upgrade head
-alembic downgrade base
-alembic upgrade head
+alembic -c backend/alembic.ini upgrade head
+alembic -c backend/alembic.ini downgrade base
+alembic -c backend/alembic.ini upgrade head
 ```
 
 This lifecycle is also automated inside `tests/test_phase4a_security_and_ops.py::test_alembic_migrations_upgrade_and_downgrade_clean_db` and in GitHub Actions CI.
@@ -85,8 +85,8 @@ docker compose build
 
 ## 6. Automated CI/CD Pipeline
 
-[.github/workflows/ci.yml](file:///c:/Users/Abhiram/Documents/Projects/Doc/.github/workflows/ci.yml) runs on every push and pull request to `main`:
-1. `backend`: Installs `tesseract-ocr`, Python dependencies, verifies Alembic `upgrade/downgrade/upgrade`, and runs `pytest -v tests` (including unmocked Tesseract OCR integration).
-2. `frontend-and-e2e`: Audits production npm dependencies, type-checks, builds, installs Playwright Chromium, and executes `frontend/e2e/documind.spec.ts`.
-3. `docker-compose-validate`: Validates development & production Compose manifests and builds backend, worker, and frontend images.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push and pull request to `main`:
+1. `backend`: Installs `tesseract-ocr`, Python dependencies, verifies Alembic `upgrade/downgrade/upgrade`, and runs `python -m pytest -v -rs tests` with `REQUIRE_REAL_TESSERACT=1` (enforcing unmocked Tesseract OCR integration).
+2. `frontend-and-e2e`: Installs `tesseract-ocr`, CPU PyTorch/backend dependencies, audits production npm dependencies, type-checks, builds, installs Playwright Chromium, and executes `frontend/e2e/documind.spec.ts` against `scripts/e2e_test_server.py` with `REQUIRE_REAL_TESSERACT=1`.
+3. `docker-validate`: Validates development & production Compose manifests and builds backend, worker, and frontend images.
 

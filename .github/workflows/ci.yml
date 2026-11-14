@@ -49,8 +49,9 @@ jobs:
       - name: Run full pytest suite (including unmocked Tesseract OCR integration)
         env:
           JWT_SECRET_KEY: "ci-test-only-secret-key-not-used-in-production-0001"
+          REQUIRE_REAL_TESSERACT: "1"
         run: |
-          python -m pytest -v tests
+          python -m pytest -v -rs tests
 
   frontend-and-e2e:
     name: Frontend Build, Security Audit & Playwright E2E
@@ -91,6 +92,7 @@ jobs:
         working-directory: frontend
         env:
           E2E_PYTHON: "python3"
+          REQUIRE_REAL_TESSERACT: "1"
         run: |
           npx playwright install --with-deps chromium
           npm run test:e2e

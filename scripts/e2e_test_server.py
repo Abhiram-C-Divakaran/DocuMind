@@ -92,8 +92,17 @@ def main() -> None:
         threading.Thread(target=_run, daemon=True).start()
         return f"e2e-thread-{job_id[:8]}", None
 
-    # Realistic fallback extractor ONLY if host lacks Tesseract binary during E2E
-    tess_ok, _, _ = get_tesseract_status()
+    # Realistic fallback extractor ONLY if host lacks Tesseract binary during local E2E
+    tess_ok, _, tess_reason = get_tesseract_status()
+    require_real_ocr = os.environ.get("REQUIRE_REAL_TESSERACT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not tess_ok and require_real_ocr:
+        raise RuntimeError(
+            f"REQUIRE_REAL_TESSERACT is enabled, but Tesseract is unavailable: {tess_reason}"
+        )
 
     async def synthetic_e2e_extract(self, file_path):
         return ExtractionOutput(

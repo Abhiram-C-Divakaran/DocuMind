@@ -1,5 +1,5 @@
 import re
-from typing import List
+from typing import List, Optional
 from ml.extraction.schemas import ExtractedField
 from ml.ocr.engine import OCRResult
 

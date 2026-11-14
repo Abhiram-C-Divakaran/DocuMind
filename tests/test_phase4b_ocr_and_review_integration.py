@@ -1,4 +1,5 @@
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -66,7 +67,14 @@ async def test_real_tesseract_ocr_and_review_workflow_unmocked(
 ):
     """Unmocked integration test: login -> 202 upload -> Celery worker -> real Tesseract OCR -> review -> export."""
     available, _, reason = get_tesseract_status()
+    require_real_ocr = os.environ.get("REQUIRE_REAL_TESSERACT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if not available:
+        if require_real_ocr:
+            pytest.fail(f"REQUIRE_REAL_TESSERACT is enabled, but Tesseract is unavailable: {reason}")
         pytest.skip(f"Real Tesseract OCR binary unavailable on host: {reason}")
 
     headers = await _login_bearer_headers(anon_client, "reviewer@test.local", "StrongPass123!")
@@ -97,9 +105,14 @@ async def test_real_tesseract_ocr_and_review_workflow_unmocked(
 
     latest_ext = doc_data["extractions"][-1]
     assert latest_ext["extraction_method"] == "TESSERACT_BASELINE"
-    assert latest_ext["is_placeholder"] is False
+    ext_meta = latest_ext.get("extraction_metadata") or {}
+    assert ext_meta.get("is_real_ocr") is True
+    assert ext_meta.get("total_tokens", 0) >= 5
+    assert latest_ext["confidence"] is not None and latest_ext["confidence"] > 0.0
     assert latest_ext["raw_text"] and "SUNRISE" in latest_ext["raw_text"].upper()
     assert latest_ext["structured_data"]["total_amount"] is not None
+    assert float(latest_ext["structured_data"]["total_amount"]) == pytest.approx(25.92, abs=0.05)
+    assert "SUNRISE" in (latest_ext["structured_data"].get("vendor_name") or "").upper()
 
     # Review workflow: draft edit -> reload -> approve -> history -> active learning export
     draft = await anon_client.patch(

@@ -594,3 +594,40 @@ def test_import_checkpoint_uses_real_signatures_and_unpacks_colab_nested_zip(tmp
     assert report["smoke_test_passed"] is True
     assert (target_dir / "config.json").exists()
     assert (target_dir / "model.safetensors").exists()
+
+
+def test_all_project_modules_resolve_type_hints_without_name_errors():
+    """Guards against Python 3.11 eager-annotation NameErrors hidden under Python 3.14 PEP 649."""
+    import importlib
+    import inspect
+    import typing
+
+    repo_root = Path(__file__).resolve().parents[1]
+    unresolved = []
+    for root_dir in ("backend", "ml", "scripts"):
+        root_path = repo_root / root_dir
+        for py_file in sorted(root_path.rglob("*.py")):
+            if "__pycache__" in py_file.parts or "alembic" in py_file.parts:
+                continue
+            if py_file.name in {"__init__.py", "colab_guide.py"}:
+                continue
+            mod_name = ".".join(py_file.relative_to(repo_root).with_suffix("").parts)
+            mod = importlib.import_module(mod_name)
+            for name, obj in vars(mod).items():
+                if getattr(obj, "__module__", None) != mod_name:
+                    continue
+                if inspect.isfunction(obj):
+                    try:
+                        typing.get_type_hints(obj)
+                    except NameError as exc:
+                        unresolved.append((mod_name, name, str(exc)))
+                elif inspect.isclass(obj):
+                    for m_name, member in vars(obj).items():
+                        fn = member.__func__ if isinstance(member, (classmethod, staticmethod)) else member
+                        if inspect.isfunction(fn):
+                            try:
+                                typing.get_type_hints(fn)
+                            except NameError as exc:
+                                unresolved.append((mod_name, f"{name}.{m_name}", str(exc)))
+
+    assert unresolved == []

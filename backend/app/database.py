@@ -12,7 +12,7 @@ from backend.app.logger import logger
 
 connect_args = {}
 if settings.DATABASE_URL.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
+    connect_args = {"check_same_thread": False, "timeout": 30}
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -37,7 +37,7 @@ def build_sync_session_factory(sync_url: Optional[str] = None) -> sessionmaker:
     url = sync_url or settings.sync_database_url
     sync_kwargs: dict = {"future": True, "pool_pre_ping": True}
     if url.startswith("sqlite"):
-        sync_kwargs["connect_args"] = {"check_same_thread": False}
+        sync_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
     eng = create_engine(url, **sync_kwargs)
     return sessionmaker(bind=eng, class_=Session, expire_on_commit=False, autocommit=False, autoflush=False)
 
@@ -48,7 +48,7 @@ def get_sync_session() -> Session:
         url = settings.sync_database_url
         sync_kwargs: dict = {"future": True, "pool_pre_ping": True}
         if url.startswith("sqlite"):
-            sync_kwargs["connect_args"] = {"check_same_thread": False}
+            sync_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
         _sync_engine = create_engine(url, **sync_kwargs)
         _SyncSessionLocal = sessionmaker(
             bind=_sync_engine,

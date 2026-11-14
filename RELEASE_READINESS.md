@@ -1,6 +1,6 @@
 # DocuMind Release Readiness & Verification Report
 
-**Release Candidate Scope**: Phase 4B (Security Hardening, Resilience, Real-Browser E2E Verification, CI/CD & Production Documentation)
+**Release Candidate Scope**: Phases 4B & 5B (Security Hardening, Resilience, Python 3.11 Compatibility, Real-Browser E2E, CI/CD & Production Documentation)
 **Target Environment**: Windows 11 Host Verification + Ubuntu CI (`ubuntu-latest`) / Docker Production Stack
 
 ---
@@ -15,11 +15,11 @@ Status Legend:
 
 | Check | Status | Details & Exact Evidence |
 | --- | --- | --- |
-| Backend Unit, API, Review, Auth, RBAC, Worker & Security Tests | `PASS` | `pytest -v tests` executed after all code edits: **93 passed, 1 skipped, 0 failed** (37.34s). Covers Phases 1–4B, Alembic clean `upgrade/downgrade/upgrade`, Argon2/JWT/RBAC, HttpOnly+CSRF cookies, fail-closed Redis rate limiter, outbox & stale-job recovery, decompression bombs, log redaction, and checkpoint zip-slip validation. |
+| Backend Unit, API, Review, Auth, RBAC, Worker & Security Tests | `PASS` | `pytest -v -rs tests` executed on Windows host: **97 passed, 1 skipped, 0 failed** (50.72s). Covers Phases 1–5B, Alembic clean `upgrade/downgrade/upgrade`, Python 3.11 `typing.get_type_hints()` validation across project modules, Argon2/JWT/RBAC, HttpOnly+CSRF cookies, fail-closed Redis rate limiter, outbox & stale-job recovery, decompression bombs, log redaction, and checkpoint zip-slip validation. |
 | API-Driven Document Upload -> Worker -> Review -> Feedback Flow | `PASS` | `tests/test_phase4b_ocr_and_review_integration.py::test_end_to_end_authenticated_document_processing_review_and_feedback_export` passed (`202` upload -> `COMPLETED` extraction -> preview binary + `nosniff` -> draft -> approve -> immutable original + audit history -> feedback JSONL export). |
-| Real Unmocked Tesseract OCR Integration | `BLOCKED` | `test_real_tesseract_ocr_and_review_workflow_unmocked` skipped on local Windows host because `tesseract` binary is not installed on host `PATH`. Configured to execute unmocked inside Linux CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) and inside Docker `worker`. |
-| Frontend Type Check (`tsc --noEmit`) & Production Build (`vite build`) | `PASS` | `npm --prefix frontend run lint` and `npm --prefix frontend run build` exited `0` (3.71s, 1501 modules transformed). |
-| Playwright Real-Browser E2E Journey (15-Step Workflow + Screenshots) | `PASS` | Chrome headless browser executed `frontend/e2e/documind.spec.ts` against live FastAPI + Vite (`ok 1`, 8.5s): Admin creates Reviewer/Viewer -> HttpOnly cookie persistence verified -> 202 upload + async poll -> Modal -> Review Workspace fix (`Rules of Hooks` crash caught and fixed) -> Draft save -> Approve -> Feedback export (`1` record) -> Viewer 403/UI mutation blocks -> Captured `docs/screenshots/01_login.png`–`06_admin_jobs_ops.png`. |
+| Real Unmocked Tesseract OCR Integration | `BLOCKED` | `test_real_tesseract_ocr_and_review_workflow_unmocked` skipped on local Windows host because `tesseract` binary is not installed on host `PATH`. Enforced with `REQUIRE_REAL_TESSERACT=1` inside Ubuntu CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) so missing Tesseract fails rather than skipping. |
+| Frontend Type Check (`tsc --noEmit`) & Production Build (`vite build`) | `PASS` | `npm --prefix frontend run lint` and `npm --prefix frontend run build` exited `0` (6.73s, 1501 modules transformed). |
+| Playwright Real-Browser E2E Journey (15-Step Workflow + Screenshots) | `PASS` | Chrome headless browser executed `frontend/e2e/documind.spec.ts` against live FastAPI + Vite (`ok 1`, `1 passed (24.0s)`): Admin creates Reviewer/Viewer -> HttpOnly cookie persistence verified -> 202 upload + async poll -> Modal -> Review Workspace -> Draft save -> Approve -> Feedback export (`1` record) -> Viewer 403/UI mutation blocks. Runs on Ubuntu CI with `REQUIRE_REAL_TESSERACT=1`. |
 | Docker Compose Dev & Prod Manifest Validation | `PASS` | Both `docker-compose -f docker-compose.yml config -q` and `docker-compose -f docker-compose.yml -f docker-compose.prod.yml config -q` exited `0` (`ports: !reset []` clears host ports 8000/5555 in prod). |
 | GitHub Actions CI Syntax & Job Definition Validation | `PASS` | `.github/workflows/ci.yml` validated cleanly (`['backend', 'frontend-and-e2e', 'docker-validate']`). |
 | Live Docker Compose Multi-Container Stack Startup (`postgres`, `redis`, `backend`, `worker`, `beat`, `frontend`) | `BLOCKED` | `docker info` failed locally (`open //./pipe/docker_engine: The system cannot find the file specified` — Docker Desktop Linux engine daemon is stopped on host). |
@@ -28,14 +28,20 @@ Status Legend:
 
 ---
 
-## 2. Genuine Issues Discovered & Fixed During Phase 4B Verification
+## 2. Genuine Issues Discovered & Fixed During Verification
 
-1. **React Rules-of-Hooks Crash in Review Workspace ([DocumentReviewWorkspace.tsx](file:///c:/Users/Abhiram/Documents/Projects/Doc/frontend/src/components/Reviews/DocumentReviewWorkspace.tsx))**:
+1. **React Rules-of-Hooks Crash in Review Workspace ([DocumentReviewWorkspace.tsx](frontend/src/components/Reviews/DocumentReviewWorkspace.tsx))**:
    - Real browser E2E testing uncovered `Error: Rendered more hooks than during the previous render` caused by placing the preview-loading `useEffect` *after* early `if (loading)` / `if (loadError || !review)` returns. Moved `useEffect` above all early returns and re-verified with full build and passing browser E2E.
-2. **Production Port Exposure Override ([docker-compose.prod.yml](file:///c:/Users/Abhiram/Documents/Projects/Doc/docker-compose.prod.yml))**:
+2. **Production Port Exposure Override ([docker-compose.prod.yml](docker-compose.prod.yml))**:
    - Updated `backend` and `flower` overrides to `ports: !reset []` so base `8000`/`5555` port bindings are genuinely stripped in production instead of merged.
 3. **Browser Session Token Storage, CSRF & Fail-Closed Rate Limiter**:
    - Eliminated `sessionStorage` JWT persistence in favor of in-memory access tokens + `HttpOnly`, `SameSite=lax`, path-scoped refresh cookies paired with `X-CSRF-Token`, trusted-proxy IP boundaries, fail-closed Redis rate limiting, and explicit `unknown` worker health reporting when Redis cannot be reached.
+4. **Python 3.11 Annotation NameError ([ml/extraction/address.py](ml/extraction/address.py))**:
+   - Ubuntu CI (`Python 3.11.18`) failed on import with `NameError: name 'Optional' is not defined` on `AddressExtractor.extract`, which went undetected under local `Python 3.14.3` (PEP 649 deferred annotations). Restored `Optional` import and added a `typing.get_type_hints()` regression test across all project modules ([tests/test_phase3b_ml_readiness_and_tracking.py](tests/test_phase3b_ml_readiness_and_tracking.py)).
+5. **Unmocked Tesseract API Response Assertion & CI Strictness ([tests/test_phase4b_ocr_and_review_integration.py](tests/test_phase4b_ocr_and_review_integration.py), [scripts/e2e_test_server.py](scripts/e2e_test_server.py))**:
+   - `test_real_tesseract_ocr_and_review_workflow_unmocked` asserted nonexistent `latest_ext["is_placeholder"]` instead of `extraction_metadata.get("is_real_ocr")`, and skipped silently if `tesseract` was absent. Fixed assertions to inspect real schema fields and added `REQUIRE_REAL_TESSERACT=1` enforcement in CI so neither pytest nor Playwright E2E can fall back silently on Ubuntu runners.
+6. **Linux Receipt Font Fallback & SQLite Concurrency Hardening ([scripts/generate_sample_receipt.py](scripts/generate_sample_receipt.py), [backend/app/database.py](backend/app/database.py))**:
+   - Added Pillow `ImageFont.load_default(size=...)` fallback when desktop TTF fonts (`arial.ttf`) are unavailable on minimal Linux environments, and added `timeout=30` to SQLite `connect_args` across async and sync sessions.
 
 ---
 

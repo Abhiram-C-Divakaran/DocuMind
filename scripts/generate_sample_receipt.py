@@ -29,9 +29,14 @@ def generate_synthetic_receipt(
         body_font = ImageFont.truetype("arial.ttf", 22)
         mono_font = ImageFont.truetype("cour.ttf", 21)
     except OSError:
-        title_font = ImageFont.load_default()
-        body_font = ImageFont.load_default()
-        mono_font = ImageFont.load_default()
+        try:
+            title_font = ImageFont.load_default(size=30)
+            body_font = ImageFont.load_default(size=22)
+            mono_font = ImageFont.load_default(size=21)
+        except TypeError:
+            title_font = ImageFont.load_default()
+            body_font = ImageFont.load_default()
+            mono_font = ImageFont.load_default()
 
     # Crisp receipt border
     draw.rectangle([(28, 28), (732, 992)], outline=(215, 220, 228), width=2)
